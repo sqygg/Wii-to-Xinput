@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "wiimote-xinput"
+version = "1.0.0"
+description = "Use a Nintendo Wii Remote as a virtual Xbox 360 (XInput) controller on Windows via ViGEmBus"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["hidapi>=0.14", "vgamepad>=0.1.0", "PySide6>=6.6"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pyinstaller>=6"]
+
+[project.gui-scripts]
+wiimote-xinput = "wiimote_xinput.__main__:main"
+
+[tool.setuptools]
+packages = ["wiimote_xinput"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
