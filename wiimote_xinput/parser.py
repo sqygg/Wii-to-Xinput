@@ -147,6 +147,9 @@ class ClassicCalibration:
     ly: AxisCalibration = field(default_factory=lambda: AxisCalibration(28, 128, 228))
     rx: AxisCalibration = field(default_factory=lambda: AxisCalibration(28, 128, 228))
     ry: AxisCalibration = field(default_factory=lambda: AxisCalibration(28, 128, 228))
+    # Analog trigger travel, raw 0..31 (some controllers never reach 31)
+    lt_range: tuple[int, int] = (0, 31)
+    rt_range: tuple[int, int] = (0, 31)
 
     @classmethod
     def from_bytes(cls, data: Sequence[int]) -> "ClassicCalibration":
@@ -311,14 +314,27 @@ def parse_input_report(report: Sequence[int]) -> ParsedReport | None:
     return DataReport(report_id=rid, buttons=buttons, accel_raw=accel, ir_raw=ir, ext_raw=ext)
 
 
-def parse_nunchuk(ext: Sequence[int], cal: NunchukCalibration) -> NunchukState | None:
-    if len(ext) < 6:
-        return None
-    if all(b == 0xFF for b in ext[:6]):
+@dataclass(frozen=True)
+class NunchukRaw:
+    stick: tuple[int, int]  # 0..255
+    accel: tuple[int, int, int]  # 10-bit
+    buttons: int
+
+
+@dataclass(frozen=True)
+class ClassicRaw:
+    left: tuple[int, int]  # 8-bit scale (6-bit value << 2)
+    right: tuple[int, int]  # 8-bit scale (5-bit value << 3)
+    lt: int  # 0..31
+    rt: int
+    buttons: int
+
+
+def nunchuk_raw(ext: Sequence[int]) -> NunchukRaw | None:
+    if len(ext) < 6 or all(b == 0xFF for b in ext[:6]):
         return None  # extension yanked / not initialised
     b5 = ext[5]
-    stick = (cal.stick_x.normalize(ext[0]), cal.stick_y.normalize(ext[1]))
-    raw_accel = (
+    accel = (
         (ext[2] << 2) | ((b5 >> 2) & 0x03),
         (ext[3] << 2) | ((b5 >> 4) & 0x03),
         (ext[4] << 2) | ((b5 >> 6) & 0x03),
@@ -328,13 +344,11 @@ def parse_nunchuk(ext: Sequence[int], cal: NunchukCalibration) -> NunchukState |
         buttons |= NUN_Z
     if not b5 & 0x02:
         buttons |= NUN_C
-    return NunchukState(stick=stick, buttons=buttons, accel=cal.accel.normalize(raw_accel))
+    return NunchukRaw((ext[0], ext[1]), accel, buttons)
 
 
-def parse_classic(ext: Sequence[int], cal: ClassicCalibration) -> ClassicState | None:
-    if len(ext) < 6:
-        return None
-    if all(b == 0xFF for b in ext[:6]):
+def classic_raw(ext: Sequence[int]) -> ClassicRaw | None:
+    if len(ext) < 6 or all(b == 0xFF for b in ext[:6]):
         return None
     b0, b1, b2, b3, b4, b5 = ext[:6]
     lx = b0 & 0x3F
@@ -344,12 +358,34 @@ def parse_classic(ext: Sequence[int], cal: ClassicCalibration) -> ClassicState |
     lt = ((b2 >> 2) & 0x18) | ((b3 >> 5) & 0x07)
     rt = b3 & 0x1F
     buttons = (~((b4 << 8) | b5)) & CLASSIC_BUTTON_MASK
+    return ClassicRaw((lx << 2, ly << 2), (rx << 3, ry << 3), lt, rt, buttons)
+
+
+def parse_nunchuk(ext: Sequence[int], cal: NunchukCalibration) -> NunchukState | None:
+    raw = nunchuk_raw(ext)
+    if raw is None:
+        return None
+    stick = (cal.stick_x.normalize(raw.stick[0]), cal.stick_y.normalize(raw.stick[1]))
+    return NunchukState(stick=stick, buttons=raw.buttons, accel=cal.accel.normalize(raw.accel))
+
+
+def _trigger(value: int, rng: tuple[int, int]) -> float:
+    lo, hi = rng
+    if hi <= lo:
+        return 0.0
+    return _clamp((value - lo) / (hi - lo), 0.0, 1.0)
+
+
+def parse_classic(ext: Sequence[int], cal: ClassicCalibration) -> ClassicState | None:
+    raw = classic_raw(ext)
+    if raw is None:
+        return None
     return ClassicState(
-        left=(cal.lx.normalize(lx << 2), cal.ly.normalize(ly << 2)),
-        right=(cal.rx.normalize(rx << 3), cal.ry.normalize(ry << 3)),
-        lt=lt / 31.0,
-        rt=rt / 31.0,
-        buttons=buttons,
+        left=(cal.lx.normalize(raw.left[0]), cal.ly.normalize(raw.left[1])),
+        right=(cal.rx.normalize(raw.right[0]), cal.ry.normalize(raw.right[1])),
+        lt=_trigger(raw.lt, cal.lt_range),
+        rt=_trigger(raw.rt, cal.rt_range),
+        buttons=raw.buttons,
     )
 
 
@@ -392,6 +428,26 @@ def ir_pointer(dots: Sequence[IrDot]) -> Vec2 | None:
     else:
         mx, my = float(valid[0].x), float(valid[0].y)
     return (_clamp(1.0 - 2.0 * mx / IR_MAX_X), _clamp(2.0 * my / IR_MAX_Y - 1.0))
+
+
+@dataclass(frozen=True)
+class IrCalibration:
+    """Maps the raw pointer (see :func:`ir_pointer`) so that the measured
+    screen centre becomes (0, 0) and the measured corners become ±1."""
+
+    center: Vec2 = (0.0, 0.0)
+    half_range: Vec2 = (1.0, 1.0)  # may be negative to flip an axis
+
+    def apply(self, p: Vec2 | None) -> Vec2 | None:
+        if p is None:
+            return None
+        return (
+            _clamp((p[0] - self.center[0]) / self.half_range[0]),
+            _clamp((p[1] - self.center[1]) / self.half_range[1]),
+        )
+
+
+IR_IDENTITY = IrCalibration()
 
 
 @dataclass(frozen=True)

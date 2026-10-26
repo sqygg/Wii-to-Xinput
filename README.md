@@ -7,6 +7,7 @@ else that speaks XInput see a normal wired Xbox 360 pad. No per-game setup is ne
 * Native Bluetooth HID: no Dolphin, no GlovePIE. Works with `RVL-CNT-01` and `RVL-CNT-01-TR` (Wii Remote Plus), and with a DolphinBar in mode 4.
 * Nunchuk and Classic Controller / Classic Controller Pro are detected automatically, including hot-plugging, and use their factory calibration.
 * Accelerometer tilt steering, an IR pointer mapped to a stick, and D-Pad-as-stick.
+* **Calibration tab**: guided calibration for the accelerometers, the Nunchuk stick, the Classic Controller sticks and triggers, and the IR pointer, plus a deadzone helper and a live sensor monitor. Calibration is stored per Wiimote, applies instantly, and can be reset to factory values.
 * **Bindable motion gestures**: shake, and tilt left/right/up/down, on both the Wiimote and the Nunchuk. Each gesture works like an extra button and can press any Xbox button, key or mouse button.
 * **Keyboard & mouse output**, alongside the Xbox pad or instead of it. Any button can press a key or mouse button, or scroll the wheel. The IR pointer, a stick or tilt can move the mouse cursor, and a stick can press WASD or the arrow keys. This works in games that don't support controllers, and on the desktop.
 * Game rumble is forwarded to the Wiimote motor, with variable intensity done by pulse-width modulation.
@@ -62,6 +63,8 @@ wiimote_xinput/
 ├── bluetooth_core.py  WiimoteSession (protocol state machine) + DeviceManager (discovery, slots)
 ├── bt_pairing.py      Win32 Bluetooth API pairing helper (binary PIN, HID service enable)
 ├── parser.py          Pure report parsing: buttons, accel, Nunchuk, Classic, IR, status, calibration
+├── calibration.py     Per-Wiimote user calibration: data model, factory overrides, guided procedures
+├── calibration_ui.py  Calibration tab: wizards, live stick / IR camera / accelerometer views, sensor monitor
 ├── motion.py          Shake / tilt gesture detection (hysteresis, hold time, swing rejection)
 ├── mapper.py          Profile → XInput + keyboard/mouse translation, deadzones, curves, tilt, sideways rotation
 ├── kbm_output.py      Keyboard & mouse injection via SendInput (scan codes, sub-pixel motion, shared key counts)
@@ -191,6 +194,37 @@ Built-in profiles: **Default**, **Sideways (NES style)** (D-Pad rotated, 2 = A, 
 **Sideways Racing** (tilt steering, 2 = RT accelerator, 1 = LT brake), **IR Pointer**
 (sensor bar aims with the right stick), and the two keyboard & mouse profiles below.
 
+### Calibration
+
+Factory calibration is read from every Wiimote and extension automatically, so calibrating is
+optional. Do it when a stick drifts or can't reach the edge, tilt or shake feels off, or the IR
+pointer doesn't line up with your screen. Open the **Calibration** tab and pick the Wiimote at the
+top (each remote stores its own calibration). Then choose a procedure:
+
+| Procedure | What you do | What it fixes |
+|---|---|---|
+| **Wiimote accelerometer** | Place the remote flat, standing on its end, then on its side (3 × 1.5 s, hands off) | Tilt sticks, tilt gestures, shake sensitivity |
+| **Nunchuk accelerometer** | Same three positions with the Nunchuk | Nunchuk tilt and shake |
+| **Nunchuk stick** | Let go (centre), then rotate the stick around its edge and click Done | Drift, off-centre rest position, sticks that never reach 100% |
+| **Classic Controller** | Let go of everything, then rotate both sticks and fully press L/R | Both sticks, and the analog trigger travel (many controllers never reach full scale) |
+| **IR pointer** | Aim at the screen centre, the top-left corner, then the bottom-right corner | Makes the pointer cover exactly your screen, wherever the sensor bar sits |
+| **Deadzone helper** | Let go of all sticks for 3 s | Suggests the smallest drift-free deadzone and applies it to the active profile |
+
+Each procedure checks its measurements. A remote that moved during a "keep still" step, was
+in the wrong position, didn't move a stick far enough, or lost sight of the sensor bar gets a
+clear message, and that step can be repeated. Results apply the moment you click **Save
+calibration**. **Reset to factory** undoes one procedure, and **Reset all to factory** undoes
+everything for that Wiimote.
+
+The tab shows live visuals: the stick position against its calibrated range (dashed) and the
+range measured so far (shaded), what the IR camera sees, and the acceleration per axis. The
+**live sensor monitor** lists raw and calibrated values, tilt angles and shake strength
+against your gesture thresholds, IR dots, active gestures, and which calibration is custom.
+It is useful for tuning, and for placing the sensor bar.
+
+After an IR calibration, set *Settings → Mouse pointer → Pointer range* to 100%, because the
+calibrated pointer already spans the screen exactly.
+
 ### Motion gestures
 
 The **Motion gestures** box at the bottom of the **Mapping** tab lists ten gestures. Bind each
@@ -271,6 +305,10 @@ out-of-range numbers are clamped.
 }
 ```
 
+Calibration is stored in the same file, separate from the profiles, under `"calibrations"`. It is
+keyed by the Wiimote's serial (its Bluetooth address), so it follows the physical remote
+whichever profile is active. The Calibration tab is the easiest way to change it.
+
 * Button sources: `wiimote.{UP,DOWN,LEFT,RIGHT,A,B,ONE,TWO,PLUS,MINUS,HOME}`, `nunchuk.{C,Z}`,
   `classic.{UP,DOWN,LEFT,RIGHT,A,B,X,Y,L,R,ZL,ZR,PLUS,MINUS,HOME}`, and the motion gestures
   `motion.{WIIMOTE,NUNCHUK}_{SHAKE,TILT_LEFT,TILT_RIGHT,TILT_UP,TILT_DOWN}`. Gestures work in
@@ -290,7 +328,7 @@ out-of-range numbers are clamped.
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m pytest                                      # 52 tests, no hardware needed
+python -m pytest                                      # 65 tests, no hardware needed
 python -m wiimote_xinput --simulate --dry-run         # full GUI fed by a simulated Wiimote + Nunchuk
 python -m wiimote_xinput --simulate                   # same, but drives a real virtual Xbox pad
 python -m wiimote_xinput --list                       # Wiimote HID devices Windows exposes
@@ -320,7 +358,9 @@ Checklist with real hardware:
 | Card says Connected but the buttons do nothing in games | ViGEmBus missing or blocked. Check the banner or `--check-driver`. Also check that Steam Input isn't remapping the pad: *Steam → Settings → Controller → Xbox Configuration Support* off, or configure per game. |
 | Double input in a game | The game reads both the virtual pad and something else (for example Steam Input's own virtual pad). Disable Steam Input for that game, or hide the extra device with [HidHide](https://github.com/nefarius/HidHide). |
 | Nunchuk / Classic not detected | Re-seat the plug. Third-party extensions that only work in encrypted mode are rare; this app uses the unencrypted init that clones support. Check the log for the extension ID. A remote with built-in MotionPlus (`-TR`) works, but MotionPlus gyro data isn't used. |
-| Stick drifts or doesn't reach the edges | Raise the **Deadzone** or lower **Outer saturation** in *Settings*. Ranges also self-calibrate as you move the stick. |
+| Stick drifts or doesn't reach the edges | *Calibration → Nunchuk stick* (or *Classic Controller*), then *Deadzone helper*. Without calibration, ranges also self-adjust as you move the stick. |
+| Pointer doesn't line up with the screen | *Calibration → IR pointer*, then set *Pointer range* to 100%. |
+| Tilt reads a few degrees off while lying flat | *Calibration → Wiimote accelerometer*. Old remotes drift from their factory values. |
 | Tilt / IR goes the wrong way | Use the **Invert X/Y** toggles for that stick. IR needs a powered sensor bar (or two IR candles) about 1–3 m away. |
 | Frequent disconnects | Fresh batteries (below 20% the Wiimote radio gets flaky), keep line of sight, avoid USB 3.0 ports right next to a Bluetooth dongle (2.4 GHz interference), or use a DolphinBar in mode 4. |
 | Shake fires too easily, or not at all | Raise or lower *Shake strength needed* in *Settings → Motion gestures*. Around 0.6 g catches gentle waggles; 1.5 g or more needs a hard swing. |

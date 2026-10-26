@@ -17,6 +17,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .calibration import DeviceCalibration
 from .constants import (
     BUTTON_SOURCES,
     KBM_TARGET_LABELS,
@@ -398,6 +399,8 @@ class ConfigStore:
         self._lock = threading.RLock()
         self.settings = AppSettings()
         self.profiles: dict[str, Profile] = default_profiles()
+        # Per-Wiimote user calibration, keyed by WiimoteHidInfo.key (serial)
+        self.calibrations: dict[str, DeviceCalibration] = {}
 
     # -- persistence -------------------------------------------------------
 
@@ -436,6 +439,13 @@ class ConfigStore:
                 self.profiles = profiles
                 self.save()
             self.profiles = profiles or default_profiles()
+            cals = raw.get("calibrations")
+            self.calibrations = {}
+            if isinstance(cals, dict):
+                for key, value in cals.items():
+                    cal = DeviceCalibration.from_dict(value)
+                    if not cal.is_empty():
+                        self.calibrations[str(key)] = cal
             if self.settings.active_profile not in self.profiles:
                 self.settings.active_profile = next(iter(self.profiles))
             return self
@@ -446,6 +456,7 @@ class ConfigStore:
                 "version": CONFIG_VERSION,
                 "settings": asdict(self.settings),
                 "profiles": [p.to_dict() for p in self.profiles.values()],
+                "calibrations": {k: c.to_dict() for k, c in self.calibrations.items() if not c.is_empty()},
             }
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -483,6 +494,18 @@ class ConfigStore:
             self.profiles[profile.name] = profile
             if save:
                 self.save()
+
+    def get_calibration(self, key: str) -> DeviceCalibration | None:
+        with self._lock:
+            return self.calibrations.get(key)
+
+    def set_calibration(self, key: str, cal: DeviceCalibration | None) -> None:
+        with self._lock:
+            if cal is None or cal.is_empty():
+                self.calibrations.pop(key, None)
+            else:
+                self.calibrations[key] = cal
+            self.save()
 
     def delete_profile(self, name: str) -> None:
         with self._lock:

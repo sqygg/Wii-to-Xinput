@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Iterable
 
+from .calibration import DeviceCalibration, EffectiveCalibration, RawSnapshot, apply_overrides
 from .config import AppSettings, ConfigStore, Profile
 from .constants import (
     EEPROM_ACCEL_CALIBRATION,
@@ -61,7 +62,9 @@ from .parser import (
     NunchukCalibration,
     StatusReport,
     WiimoteState,
+    classic_raw,
     ir_pointer,
+    nunchuk_raw,
     parse_classic,
     parse_input_report,
     parse_ir,
@@ -130,6 +133,7 @@ class WiimoteSession(threading.Thread):
         slot_allocator: "SlotAllocator",
         listener: SessionListener | None = None,
         kbm_factory: KbmFactory | None = None,
+        user_calibration: DeviceCalibration | None = None,
     ):
         super().__init__(daemon=True, name=f"Wiimote-{hid_info.key[-8:]}")
         self.hid_info = hid_info
@@ -155,9 +159,19 @@ class WiimoteSession(threading.Thread):
         self._extension = ExtensionType.NONE
         self._ext_retry_at = 0.0
         self._ir_enabled = False
-        self._accel_cal = AccelCalibration()
-        self._nunchuk_cal = NunchukCalibration()
-        self._classic_cal = ClassicCalibration()
+        # Factory calibration as read from the device; user overrides are
+        # layered on top into self._cal (replaced atomically, never mutated).
+        self._factory_accel = AccelCalibration()
+        self._factory_nunchuk = NunchukCalibration()
+        self._factory_classic = ClassicCalibration()
+        self._user_cal = user_calibration
+        self._cal_lock = threading.Lock()
+        self._cal: EffectiveCalibration = apply_overrides(
+            self._factory_accel, self._factory_nunchuk, self._factory_classic, user_calibration
+        )
+        # Raw sensor snapshots for the Calibration tab (only built while enabled)
+        self.raw_enabled = False
+        self.raw: RawSnapshot | None = None
         self._deferred_status: StatusReport | None = None
         self._last_error: str | None = None
         self._reconfigure = False
@@ -184,6 +198,23 @@ class WiimoteSession(threading.Thread):
         self._mapper.set_profile(profile)
         if profile.needs_ir() != old_ir:
             self._reconfigure = True
+
+    def set_user_calibration(self, cal: DeviceCalibration | None) -> None:
+        """Apply new user calibration immediately (thread-safe)."""
+        self._user_cal = cal
+        self._rebuild_calibration()
+
+    def _rebuild_calibration(self) -> None:
+        with self._cal_lock:
+            self._cal = apply_overrides(self._factory_accel, self._factory_nunchuk, self._factory_classic, self._user_cal)
+
+    @property
+    def factory_calibration(self) -> tuple[AccelCalibration, NunchukCalibration, ClassicCalibration]:
+        return self._factory_accel, self._factory_nunchuk, self._factory_classic
+
+    @property
+    def calibration(self) -> EffectiveCalibration:
+        return self._cal
 
     def set_settings(self, settings: AppSettings) -> None:
         self._settings = settings
@@ -323,7 +354,8 @@ class WiimoteSession(threading.Thread):
             cal = AccelCalibration.from_eeprom(
                 self._read_memory(EEPROM_ACCEL_CALIBRATION, 10, MEM_SPACE_EEPROM)
             )
-            self._accel_cal = cal or AccelCalibration()
+            self._factory_accel = cal or AccelCalibration()
+            self._rebuild_calibration()
             if cal is None:
                 log.warning("Accelerometer calibration invalid, using defaults")
         except (ProtocolTimeout, WiimoteMemoryError) as exc:
@@ -422,19 +454,21 @@ class WiimoteSession(threading.Thread):
             self._emit("updated")
 
     def _process_data(self, rep: DataReport) -> None:
+        cal = self._cal
         buttons = rep.buttons if rep.buttons is not None else self.state.buttons
-        accel = self._accel_cal.normalize(rep.accel_raw) if rep.accel_raw else self.state.accel
+        accel = cal.accel.normalize(rep.accel_raw) if rep.accel_raw else self.state.accel
         nunchuk = classic = None
         if rep.ext_raw is not None:
             if self._extension == ExtensionType.NUNCHUK:
-                nunchuk = parse_nunchuk(rep.ext_raw, self._nunchuk_cal)
+                nunchuk = parse_nunchuk(rep.ext_raw, cal.nunchuk)
             elif self._extension.is_classic:
-                classic = parse_classic(rep.ext_raw, self._classic_cal)
+                classic = parse_classic(rep.ext_raw, cal.classic)
         dots: tuple = ()
-        pointer = None
+        pointer_raw = None
         if rep.ir_raw is not None and self._ir_enabled:
             dots = tuple(parse_ir(rep.ir_raw))
-            pointer = ir_pointer(dots)
+            pointer_raw = ir_pointer(dots)
+        pointer = cal.ir.apply(pointer_raw)
 
         profile = self._mapper.profile
         motion = self._motion.update(
@@ -449,6 +483,16 @@ class WiimoteSession(threading.Thread):
         self.kbm = kbm
         self.state = state
         self.output = out
+        if self.raw_enabled:
+            ext = rep.ext_raw
+            self.raw = RawSnapshot(
+                accel=rep.accel_raw or (self.raw.accel if self.raw else None),
+                nunchuk=nunchuk_raw(ext) if ext is not None and self._extension == ExtensionType.NUNCHUK else None,
+                classic=classic_raw(ext) if ext is not None and self._extension.is_classic else None,
+                ir_dots=dots,
+                pointer_raw=pointer_raw,
+                state=state,
+            )
         self._report_count += 1
 
     # ------------------------------------------------------------ protocol
@@ -543,9 +587,11 @@ class WiimoteSession(threading.Thread):
             ext = identify_extension(ident)
             log.info("P%d extension: %s (id %s)", self.slot, ext.label, ident.hex(" "))
             if ext == ExtensionType.NUNCHUK:
-                self._nunchuk_cal = NunchukCalibration.from_bytes(self._read_memory(REG_EXT_CALIBRATION, 16))
+                self._factory_nunchuk = NunchukCalibration.from_bytes(self._read_memory(REG_EXT_CALIBRATION, 16))
+                self._rebuild_calibration()
             elif ext.is_classic:
-                self._classic_cal = ClassicCalibration.from_bytes(self._read_memory(REG_EXT_CALIBRATION, 16))
+                self._factory_classic = ClassicCalibration.from_bytes(self._read_memory(REG_EXT_CALIBRATION, 16))
+                self._rebuild_calibration()
         except (ProtocolTimeout, WiimoteMemoryError) as exc:
             log.warning("P%d extension init failed: %s", self.slot, exc)
             ext = ExtensionType.PARTIAL
@@ -710,6 +756,7 @@ class DeviceManager:
                     self._slots,
                     self._dispatch,
                     self._kbm_factory,
+                    self.store.get_calibration(info.key),
                 )
                 self._sessions[info.key] = session
                 session.start()
@@ -720,6 +767,14 @@ class DeviceManager:
         with self._lock:
             for s in self._sessions.values():
                 s.set_profile(profile)
+
+    def set_calibration(self, key: str, cal: DeviceCalibration | None) -> None:
+        """Persist a Wiimote's user calibration and apply it live."""
+        self.store.set_calibration(key, cal)
+        with self._lock:
+            session = self._sessions.get(key)
+        if session is not None:
+            session.set_user_calibration(cal)
 
     def apply_settings(self, settings: AppSettings) -> None:
         with self._lock:

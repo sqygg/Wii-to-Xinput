@@ -152,3 +152,27 @@ def test_tilt_gesture_presses_bound_button(tmp_path):
         assert wait_until(lambda: pads[0].last.buttons == 0, timeout=8.0)  # released when it rocks back
     finally:
         mgr.stop()
+
+
+def test_user_calibration_applies_live_and_raw_snapshots(tmp_path):
+    from wiimote_xinput.calibration import DeviceCalibration
+
+    transport, pads = SimulatedTransport(), []
+    store, mgr = make_manager(tmp_path, transport, pads)
+    mgr.start()
+    try:
+        assert wait_until(lambda: mgr.sessions() and mgr.sessions()[0].state.nunchuk is not None)
+        s = mgr.sessions()[0]
+        assert s.raw is None  # raw snapshots are off unless the Calibration tab asks
+        s.raw_enabled = True
+        assert wait_until(lambda: s.raw is not None and s.raw.nunchuk is not None and s.raw.accel is not None)
+
+        # Shift the stick centre far to the right: the same raw value now reads as "left".
+        cal = DeviceCalibration(nunchuk_stick=((0, 250, 255), (0, 128, 255)))
+        mgr.set_calibration(SIMULATED_INFO.key, cal)
+        assert wait_until(lambda: s.state.nunchuk is not None and s.state.nunchuk.stick[0] < -0.1)
+        assert store.get_calibration(SIMULATED_INFO.key) == cal
+        mgr.set_calibration(SIMULATED_INFO.key, None)
+        assert s.calibration.nunchuk.stick_x.center == 0x80  # factory value from the simulator
+    finally:
+        mgr.stop()

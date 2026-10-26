@@ -89,6 +89,7 @@ class SimulatedTransport:
         self._next_report = 0.0
         self._t0 = time.monotonic()
         self._opened = False
+        self.frozen_t: float | None = None  # hold the demo motion at this time (simulates "don't touch it")
 
     # -- Transport protocol ----------------------------------------------------
 
@@ -135,7 +136,8 @@ class SimulatedTransport:
                 if time.monotonic() < self._next_report:
                     return None
             self._next_report = time.monotonic() + self.REPORT_INTERVAL_S
-            return self._data_report(time.monotonic() - self._t0)
+            t = self.frozen_t if self.frozen_t is not None else time.monotonic() - self._t0
+            return self._data_report(t)
         time.sleep(timeout_ms / 1000.0)
         return None
 
@@ -182,6 +184,8 @@ class SimulatedTransport:
         sx = int(128 + 90 * math.cos(t * 1.5))
         sy = int(128 + 90 * math.sin(t * 1.5))
         c, z = phase in (1, 2), phase in (2, 3)
+        if self.frozen_t is not None:  # hands off: stick centred, nothing pressed
+            buttons, sx, sy, c, z = 0, 128, 128, False, False
         ext = encode_nunchuk(sx, sy, (512, 512, 716), c, z) if self.extension_id == NUNCHUK_ID else b"\xff" * 6
 
         layout = REPORT_LAYOUTS.get(self.mode, REPORT_LAYOUTS[0x30])

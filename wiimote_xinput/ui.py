@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from . import __version__, bt_pairing, platform_utils
 from .bluetooth_core import ConnectionStatus, DeviceManager, SessionInfo
+from .calibration_ui import CalibrationTab
 from .config import ConfigStore, Profile
 from .constants import (
     BUTTON_SOURCES,
@@ -214,7 +215,14 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_dashboard(), "Dashboard")
         self.tabs.addTab(self._build_mapping_tab(), "Mapping")
         self.tabs.addTab(self._build_settings_tab(), "Settings")
+        self.calibration_tab = CalibrationTab(
+            manager, store, get_profile=lambda: self._profile, profile_edited=self._on_calibration_profile_edit
+        )
+        self.tabs.addTab(self.calibration_tab, "Calibration")
         self.tabs.addTab(self._build_log_tab(), "Log")
+        self.tabs.currentChanged.connect(
+            lambda _i: self.calibration_tab.set_active(self.tabs.currentWidget() is self.calibration_tab)
+        )
         root.addWidget(self.tabs, 1)
         self.setCentralWidget(central)
 
@@ -644,6 +652,11 @@ class MainWindow(QMainWindow):
         self._refresh_profile_combo()
         log.info("Active profile: %s", name)
 
+    def _on_calibration_profile_edit(self) -> None:
+        """The deadzone helper edited the working profile in place."""
+        self._profile_changed()
+        self._load_profile_into_widgets()
+
     def _profile_changed(self) -> None:
         """Called after any edit of the working copy."""
         snapshot = self._profile.copy()
@@ -860,6 +873,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ live view
 
     def _tick(self) -> None:
+        cal_visible = self.isVisible() and self.tabs.currentWidget() is self.calibration_tab
+        if cal_visible:
+            self.calibration_tab.tick()
+        elif getattr(self, "_cal_was_visible", False):
+            self.calibration_tab.set_active(False)  # e.g. window hidden to the tray mid-calibration
+        self._cal_was_visible = cal_visible
+
         sessions = self.manager.sessions() if self._manager_started else []
         live_keys = {s.hid_info.key for s in sessions}
         for key in [k for k in self._cards if k not in live_keys]:
