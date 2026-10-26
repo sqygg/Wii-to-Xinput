@@ -114,7 +114,9 @@ py -3 -m venv .venv
 pip install -r requirements.txt
 ```
 
-Or just double-click **`run.bat`**. It creates the virtual environment on first launch.
+Or just double-click **`run.bat`** in Explorer. From PowerShell, type `.\run.bat` (PowerShell
+only runs scripts in the current folder when they start with `.\`). It creates the virtual
+environment on first launch, which takes a minute or two, then opens the app.
 
 ### Step 2: Install the ViGEmBus driver
 
