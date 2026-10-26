@@ -45,7 +45,7 @@ from .constants import (
     XUSB_X,
     XUSB_Y,
 )
-from .mapper import NEUTRAL, XInputState
+from .mapper import NEUTRAL, KbmState, XInputState
 from .parser import WiimoteState
 
 ACCENT = QColor("#3b82f6")
@@ -256,6 +256,16 @@ def describe_input(state: WiimoteState) -> str:
     return text
 
 
+def describe_kbm(kbm: KbmState) -> str:
+    parts = sorted(kbm.keys)
+    vx, vy = kbm.mouse_velocity
+    if vx or vy:
+        parts.append(f"move ({vx:+.2f}, {vy:+.2f})")
+    if kbm.mouse_absolute is not None:
+        parts.append(f"cursor ({kbm.mouse_absolute[0]:+.2f}, {kbm.mouse_absolute[1]:+.2f})")
+    return " ".join(parts) or "—"
+
+
 class ControllerCard(QFrame):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -277,6 +287,8 @@ class ControllerCard(QFrame):
         self.raw = QLabel("—")
         self.raw.setStyleSheet(f"color: {MUTED.name()}; font-family: Consolas, monospace")
         self.view = XInputView()
+        self.kbm = QLabel("—")
+        self.kbm.setStyleSheet(f"color: {MUTED.name()}; font-family: Consolas, monospace")
 
         head = QHBoxLayout()
         head.addWidget(self.title)
@@ -295,6 +307,10 @@ class ControllerCard(QFrame):
         lay.addLayout(grid)
         lay.addWidget(QLabel("Xbox controller output (what games see):"))
         lay.addWidget(self.view)
+        kbm_row = QHBoxLayout()
+        kbm_row.addWidget(QLabel("Keyboard / mouse output:"))
+        kbm_row.addWidget(self.kbm, 1)
+        lay.addLayout(kbm_row)
         lay.addWidget(self.rate, 0, Qt.AlignRight)
 
     def update_info(self, info: SessionInfo) -> None:
@@ -315,9 +331,10 @@ class ControllerCard(QFrame):
         serial = f"  ·  {info.serial}" if info.serial else ""
         self.rate.setText(f"{info.report_rate_hz:.0f} reports/s{serial}")
 
-    def update_live(self, output: XInputState, state: WiimoteState) -> None:
+    def update_live(self, output: XInputState, state: WiimoteState, kbm: KbmState | None = None) -> None:
         self.view.set_state(output)
         self.raw.setText(describe_input(state))
+        self.kbm.setText(describe_kbm(kbm) if kbm is not None else "—")
 
 
 class Banner(QFrame):

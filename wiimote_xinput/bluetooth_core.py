@@ -48,7 +48,8 @@ from .constants import (
     identify_extension,
 )
 from .hid_transport import DeviceDisconnected, HidTransport, Transport, WiimoteHidInfo, enumerate_wiimotes
-from .mapper import NEUTRAL, Mapper, XInputState
+from .kbm_output import KeyboardMouseOutput
+from .mapper import KBM_IDLE, NEUTRAL, KbmState, Mapper, XInputState
 from .parser import (
     EMPTY_STATE,
     AccelCalibration,
@@ -113,6 +114,7 @@ class SessionInfo:
 
 TransportFactory = Callable[[WiimoteHidInfo], Transport]
 PadFactory = Callable[[], VirtualPad]
+KbmFactory = Callable[[], KeyboardMouseOutput]
 SessionListener = Callable[[str, SessionInfo], None]  # (event, info)
 
 
@@ -126,6 +128,7 @@ class WiimoteSession(threading.Thread):
         pad_factory: PadFactory,
         slot_allocator: "SlotAllocator",
         listener: SessionListener | None = None,
+        kbm_factory: KbmFactory | None = None,
     ):
         super().__init__(daemon=True, name=f"Wiimote-{hid_info.key[-8:]}")
         self.hid_info = hid_info
@@ -139,6 +142,7 @@ class WiimoteSession(threading.Thread):
         self._stop_evt = threading.Event()
         self._transport: Transport | None = None
         self._pad: VirtualPad | None = None
+        self._kbm = kbm_factory() if kbm_factory is not None else None
         self.ever_connected = False
 
         # Device state (written by the session thread only)
@@ -163,6 +167,7 @@ class WiimoteSession(threading.Thread):
         # Live snapshot for the UI (replaced atomically, never mutated)
         self.state: WiimoteState = EMPTY_STATE
         self.output: XInputState = NEUTRAL
+        self.kbm: KbmState = KBM_IDLE
         self._report_count = 0
         self._rate_window_start = time.monotonic()
         self._report_rate = 0.0
@@ -275,7 +280,13 @@ class WiimoteSession(threading.Thread):
         """Never leave buttons stuck down in a game after a drop."""
         self.output = NEUTRAL
         self.state = EMPTY_STATE
+        self.kbm = KBM_IDLE
         self._rumble_on = False
+        if self._kbm is not None:
+            try:
+                self._kbm.release_all()
+            except Exception:  # noqa: BLE001
+                log.debug("Failed to release keyboard/mouse", exc_info=True)
         if self._pad is not None:
             try:
                 self._pad.neutral()
@@ -423,9 +434,12 @@ class WiimoteSession(threading.Thread):
             pointer = ir_pointer(dots)
 
         state = WiimoteState(buttons, accel, nunchuk, classic, dots, pointer)
-        out = self._mapper.map(state)
+        out, kbm = self._mapper.map_all(state)
         if self._pad is not None and out != self.output:
             self._pad.submit(out)
+        if self._kbm is not None:
+            self._kbm.apply(kbm, self._mapper.profile.mouse)
+        self.kbm = kbm
         self.state = state
         self.output = out
         self._report_count += 1
@@ -608,9 +622,11 @@ class DeviceManager:
         pad_factory: PadFactory,
         enumerate_fn: Callable[[], list[WiimoteHidInfo]] = enumerate_wiimotes,
         transport_factory: TransportFactory | None = None,
+        kbm_factory: KbmFactory | None = None,
     ):
         self.store = store
         self._pad_factory = pad_factory
+        self._kbm_factory = kbm_factory
         self._enumerate = enumerate_fn
         self._transport_factory = transport_factory or (
             lambda info: HidTransport(info.path, self.store.settings.write_method)
@@ -686,6 +702,7 @@ class DeviceManager:
                     self._pad_factory,
                     self._slots,
                     self._dispatch,
+                    self._kbm_factory,
                 )
                 self._sessions[info.key] = session
                 session.start()

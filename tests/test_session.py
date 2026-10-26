@@ -109,3 +109,29 @@ def test_ir_is_reinitialised_after_reconnect(tmp_path):
         assert wait_until(lambda: transport.mode == 0x37)
     finally:
         mgr.stop()
+
+
+def test_keyboard_mouse_profile_end_to_end(tmp_path):
+    from wiimote_xinput.kbm_output import KbmOutputFactory, RecordingBackend
+
+    transport, pads = SimulatedTransport(), []
+    store, _ = make_manager(tmp_path, transport, pads)
+    backend = RecordingBackend()
+    mgr = DeviceManager(store, lambda: pads.append(DryRunPad()) or pads[-1], lambda: [SIMULATED_INFO],
+                        lambda info: transport, kbm_factory=KbmOutputFactory(backend))
+    store.settings.active_profile = "Keyboard & Mouse FPS (Nunchuk WASD)"
+    mgr.start()
+    try:
+        assert wait_until(lambda: mgr.sessions() and transport.mode == 0x37)  # IR enabled for the mouse
+        # The simulator circles the Nunchuk stick, so movement keys and mouse motion appear.
+        assert wait_until(lambda: any(e[0] == "key" and e[1] in "WASD" for e in backend.events))
+        assert wait_until(lambda: any(e[0] == "move" for e in backend.events))
+        assert all(p.last.buttons == 0 for p in pads)  # Xbox output idle in this profile
+        transport.connected = False
+        s = mgr.sessions()[0]
+        assert wait_until(lambda: s.info().status == ConnectionStatus.RECONNECTING)
+        downs = sum(1 for e in backend.events if e[0] in ("key", "button") and e[2])
+        ups = sum(1 for e in backend.events if e[0] in ("key", "button") and not e[2])
+        assert downs == ups  # nothing left held down after the drop
+    finally:
+        mgr.stop()

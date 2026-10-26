@@ -42,6 +42,9 @@ from .bluetooth_core import ConnectionStatus, DeviceManager, SessionInfo
 from .config import ConfigStore, Profile
 from .constants import (
     BUTTON_SOURCES,
+    KBM_TARGET_LABELS,
+    KEY_STICK_LAYOUTS,
+    MOUSE_MODES,
     ORIENTATIONS,
     SOURCE_LABELS,
     STICK_SOURCES,
@@ -311,9 +314,15 @@ class MainWindow(QMainWindow):
         grid = QGridLayout(content)
         self._button_combos: dict[str, QComboBox] = {}
 
+        self._key_combos: dict[str, QComboBox] = {}
+
         def button_group(title: str, prefix: str) -> QGroupBox:
             box = QGroupBox(title)
-            form = QFormLayout(box)
+            table = QGridLayout(box)
+            for col, text in ((1, "Xbox controller"), (2, "Keyboard / mouse")):
+                head = QLabel(f"<b>{text}</b>")
+                table.addWidget(head, 0, col)
+            row = 1
             for source in BUTTON_SOURCES:
                 if not source.startswith(prefix):
                     continue
@@ -322,7 +331,18 @@ class MainWindow(QMainWindow):
                     combo.addItem(XINPUT_TARGET_LABELS[key], key)
                 combo.currentIndexChanged.connect(lambda _i, s=source, c=combo: self._set_button(s, c.currentData()))
                 self._button_combos[source] = combo
-                form.addRow(SOURCE_LABELS[source], combo)
+                kcombo = QComboBox()
+                kcombo.setMaxVisibleItems(20)
+                for key, label in KBM_TARGET_LABELS.items():
+                    kcombo.addItem(label, key)
+                kcombo.currentIndexChanged.connect(lambda _i, s=source, c=kcombo: self._set_key(s, c.currentData()))
+                self._key_combos[source] = kcombo
+                table.addWidget(QLabel(SOURCE_LABELS[source]), row, 0)
+                table.addWidget(combo, row, 1)
+                table.addWidget(kcombo, row, 2)
+                row += 1
+            table.setColumnStretch(1, 1)
+            table.setColumnStretch(2, 1)
             return box
 
         general = QGroupBox("General")
@@ -361,11 +381,49 @@ class MainWindow(QMainWindow):
         self.classic_fallback.toggled.connect(lambda v: self._set_profile_attr("classic_left_stick_fallback", v))
         aform.addRow(self.classic_fallback)
 
+        kbm = QGroupBox("Keyboard && mouse")
+        kform = QFormLayout(kbm)
+        self.xinput_enabled = QCheckBox("Also drive the virtual Xbox controller")
+        self.xinput_enabled.setToolTip(
+            "Turn off for pure keyboard/mouse profiles so games do not see controller input at the same time"
+        )
+        self.xinput_enabled.toggled.connect(lambda v: self._set_profile_attr("xinput_enabled", v))
+        kform.addRow(self.xinput_enabled)
+        self.mouse_source = QComboBox()
+        for key, text in STICK_SOURCES.items():
+            self.mouse_source.addItem(text, key)
+        self.mouse_source.currentIndexChanged.connect(
+            lambda _i: self._set_sub("mouse", "source", self.mouse_source.currentData())
+        )
+        kform.addRow("Mouse pointer source", self.mouse_source)
+        self.mouse_mode = QComboBox()
+        for key, text in MOUSE_MODES.items():
+            self.mouse_mode.addItem(text, key)
+        self.mouse_mode.currentIndexChanged.connect(
+            lambda _i: self._set_sub("mouse", "mode", self.mouse_mode.currentData())
+        )
+        kform.addRow("Mouse mode", self.mouse_mode)
+        self.key_stick_source = QComboBox()
+        for key, text in STICK_SOURCES.items():
+            self.key_stick_source.addItem(text, key)
+        self.key_stick_source.currentIndexChanged.connect(
+            lambda _i: self._set_sub("key_stick", "source", self.key_stick_source.currentData())
+        )
+        kform.addRow("Movement keys source", self.key_stick_source)
+        self.key_stick_layout = QComboBox()
+        for key, text in KEY_STICK_LAYOUTS.items():
+            self.key_stick_layout.addItem(text, key)
+        self.key_stick_layout.currentIndexChanged.connect(
+            lambda _i: self._set_sub("key_stick", "layout", self.key_stick_layout.currentData())
+        )
+        kform.addRow("Movement keys", self.key_stick_layout)
+
         grid.addWidget(general, 0, 0)
         grid.addWidget(analog, 1, 0)
+        grid.addWidget(kbm, 0, 1, 2, 1)
         grid.addWidget(button_group("Wii Remote buttons", "wiimote."), 2, 0)
         grid.addWidget(button_group("Nunchuk buttons", "nunchuk."), 3, 0)
-        grid.addWidget(button_group("Classic Controller buttons", "classic."), 0, 1, 4, 1)
+        grid.addWidget(button_group("Classic Controller buttons", "classic."), 2, 1, 2, 1)
         grid.setRowStretch(4, 1)
 
         scroll = QScrollArea()
@@ -464,8 +522,38 @@ class MainWindow(QMainWindow):
             lambda _i: self._set_setting("write_method", self.write_method.currentData())
         )
         aform.addRow("HID write method (advanced)", self.write_method)
-        grid.addWidget(app, 2, 0, 1, 2)
-        grid.setRowStretch(3, 1)
+        mouse = QGroupBox("Mouse pointer")
+        mform = QFormLayout(mouse)
+        self.mouse_widgets: dict[str, QWidget] = {
+            "speed": LabeledSlider(100, 5000, 50, "{:.0f} px/s"),
+            "deadzone": LabeledSlider(0.0, 0.5, 0.01, "{:.0%}"),
+            "curve": LabeledSlider(0.5, 3.0, 0.05, "{:.2f}"),
+            "smoothing": LabeledSlider(0.0, 0.95, 0.05, "{:.0%}"),
+            "absolute_range": LabeledSlider(0.2, 1.0, 0.05, "{:.0%}"),
+            "invert_x": QCheckBox("Invert X axis"),
+            "invert_y": QCheckBox("Invert Y axis"),
+        }
+        mlabels = {
+            "speed": "Speed (relative mode)",
+            "deadzone": "Deadzone (relative mode)",
+            "curve": "Acceleration curve (relative)",
+            "smoothing": "Smoothing (absolute mode)",
+            "absolute_range": "Pointer range (absolute mode)",
+        }
+        for attr, w in self.mouse_widgets.items():
+            if isinstance(w, LabeledSlider):
+                w.valueChanged.connect(lambda v, a=attr: self._set_sub("mouse", a, v))
+                mform.addRow(mlabels[attr], w)
+            else:
+                w.toggled.connect(lambda v, a=attr: self._set_sub("mouse", a, v))
+                mform.addRow(w)
+        self.key_threshold = LabeledSlider(0.1, 0.95, 0.05, "{:.0%}")
+        self.key_threshold.valueChanged.connect(lambda v: self._set_sub("key_stick", "threshold", v))
+        mform.addRow("Movement key threshold", self.key_threshold)
+        grid.addWidget(mouse, 2, 0, 1, 2)
+
+        grid.addWidget(app, 3, 0, 1, 2)
+        grid.setRowStretch(4, 1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -560,6 +648,13 @@ class MainWindow(QMainWindow):
             self._profile.buttons[source] = target
         self._profile_changed()
 
+    def _set_key(self, source: str, target: str) -> None:
+        if target == "NONE":
+            self._profile.keys.pop(source, None)
+        else:
+            self._profile.keys[source] = target
+        self._profile_changed()
+
     def _ask_name(self, title: str, default: str) -> str | None:
         name, ok = QInputDialog.getText(self, title, "Profile name:", text=default)
         name = name.strip()
@@ -647,6 +742,19 @@ class MainWindow(QMainWindow):
         self._select_data(self.orientation_combo, p.orientation)
         for source, combo in self._button_combos.items():
             self._select_data(combo, p.buttons.get(source, "NONE"))
+        for source, combo in self._key_combos.items():
+            self._select_data(combo, p.keys.get(source, "NONE"))
+        self._set_checked(self.xinput_enabled, p.xinput_enabled)
+        self._select_data(self.mouse_source, p.mouse.source)
+        self._select_data(self.mouse_mode, p.mouse.mode)
+        self._select_data(self.key_stick_source, p.key_stick.source)
+        self._select_data(self.key_stick_layout, p.key_stick.layout)
+        for attr, w in self.mouse_widgets.items():
+            if isinstance(w, LabeledSlider):
+                w.setValue(getattr(p.mouse, attr))
+            else:
+                self._set_checked(w, getattr(p.mouse, attr))
+        self.key_threshold.setValue(p.key_stick.threshold)
         for which, combo in self.stick_combos.items():
             self._select_data(combo, getattr(p, which).source)
         for which, combo in self.trigger_combos.items():
@@ -742,7 +850,7 @@ class MainWindow(QMainWindow):
             info = s.info()
             card.update_info(info)
             if self.isVisible():
-                card.update_live(s.output, s.state)
+                card.update_live(s.output, s.state, s.kbm)
             self._check_battery(info)
         self.empty_widget.setVisible(not self._cards)
         self._update_tray(sessions)

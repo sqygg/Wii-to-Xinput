@@ -91,6 +91,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{d.model:15} serial={d.serial or '-':20} path={d.path.decode(errors='replace')}")
         return 0
 
+    from .kbm_output import create_kbm_factory
     from .vigem_bridge import check_vigembus, create_pad
 
     if args.check_driver:
@@ -123,9 +124,10 @@ def main(argv: list[str] | None = None) -> int:
             pad_factory=lambda: create_pad(dry_run),
             enumerate_fn=simulated_enumerate,
             transport_factory=lambda info: SimulatedTransport(),
+            kbm_factory=create_kbm_factory(dry_run),
         )
     else:
-        manager = DeviceManager(store, pad_factory=lambda: create_pad(dry_run))
+        manager = DeviceManager(store, pad_factory=lambda: create_pad(dry_run), kbm_factory=create_kbm_factory(dry_run))
 
     if args.headless:
         return run_headless(manager, dry_run, check_vigembus)

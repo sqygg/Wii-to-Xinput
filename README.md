@@ -7,6 +7,7 @@ else that speaks XInput see a normal wired Xbox 360 pad. No per-game setup is ne
 * Native Bluetooth HID: no Dolphin, no GlovePIE. Works with `RVL-CNT-01` and `RVL-CNT-01-TR` (Wii Remote Plus), and with a DolphinBar in mode 4.
 * Nunchuk and Classic Controller / Classic Controller Pro are detected automatically, including hot-plugging, and use their factory calibration.
 * Accelerometer tilt steering, an IR pointer mapped to a stick, and D-Pad-as-stick.
+* **Keyboard & mouse output**, alongside the Xbox pad or instead of it. Any button can press a key or mouse button, or scroll the wheel. The IR pointer, a stick or tilt can move the mouse cursor, and a stick can press WASD or the arrow keys. This works in games that don't support controllers, and on the desktop.
 * Game rumble is forwarded to the Wiimote motor, with variable intensity done by pulse-width modulation.
 * Up to 4 remotes. Each one gets its own virtual controller and player LED.
 * Automatic reconnection. Inputs are released immediately when a remote drops, so nothing stays stuck down.
@@ -60,7 +61,8 @@ wiimote_xinput/
 ├── bluetooth_core.py  WiimoteSession (protocol state machine) + DeviceManager (discovery, slots)
 ├── bt_pairing.py      Win32 Bluetooth API pairing helper (binary PIN, HID service enable)
 ├── parser.py          Pure report parsing: buttons, accel, Nunchuk, Classic, IR, status, calibration
-├── mapper.py          Profile → XInput translation, deadzones, curves, tilt, sideways rotation
+├── mapper.py          Profile → XInput + keyboard/mouse translation, deadzones, curves, tilt, sideways rotation
+├── kbm_output.py      Keyboard & mouse injection via SendInput (scan codes, sub-pixel motion, shared key counts)
 ├── config.py          Profiles and settings dataclasses, validated JSON persistence
 ├── vigem_bridge.py    Virtual X360 pad (vgamepad), rumble callback, driver check, installer launcher
 ├── simulator.py       Byte-accurate Wiimote emulator (demo mode and tests)
@@ -184,8 +186,37 @@ scripts\build_exe.bat      # → dist\WiimoteXInput.exe
 | Classic sticks | Left / right stick |
 
 Built-in profiles: **Default**, **Sideways (NES style)** (D-Pad rotated, 2 = A, 1 = B),
-**Sideways Racing** (tilt steering, 2 = RT accelerator, 1 = LT brake), and **IR Pointer**
-(sensor bar aims with the right stick).
+**Sideways Racing** (tilt steering, 2 = RT accelerator, 1 = LT brake), **IR Pointer**
+(sensor bar aims with the right stick), and the two keyboard & mouse profiles below.
+
+### Keyboard & mouse mode
+
+Every button row in the **Mapping** tab has two columns: **Xbox controller** and
+**Keyboard / mouse**. A button can drive both at once. The **Keyboard & mouse** box sets:
+
+* **Also drive the virtual Xbox controller.** Untick it for pure keyboard/mouse profiles, so a
+  game doesn't receive controller input at the same time and switch its button prompts.
+* **Mouse pointer source** and **Mouse mode**:
+  * *Absolute*: the IR pointer sets the cursor position directly, like aiming a Wii menu. Best for the desktop.
+  * *Relative*: a stick, tilt or the IR pointer moves the cursor at a speed set by how far it is pushed. Best for
+    games. With the IR pointer, aiming towards the edge of the screen keeps turning the camera.
+* **Movement keys**: turns a stick into W/A/S/D or the arrow keys.
+
+Tuning lives in *Settings → Mouse pointer*: speed, deadzone, acceleration curve, smoothing
+(steadies IR jitter), pointer range (how much aiming covers the whole screen), axis inversion,
+and the movement-key threshold.
+
+| Profile | Mapping |
+|---|---|
+| **Desktop Mouse (IR pointer)** | Point = cursor, B = left click, A = right click, Nunchuk C = middle click, D-Pad up/down = scroll, D-Pad left/right = back/forward, −/+ = volume, Home = Windows key, 1 = Esc, 2 = Enter, Nunchuk stick = arrow keys, Z = Ctrl |
+| **Keyboard & Mouse FPS (Nunchuk WASD)** | Nunchuk stick = WASD, pointer = mouse look, B = fire (left click), A = aim (right click), C = Space (jump), Z = Ctrl (crouch), D-Pad = R / Shift / Q / E, 1/2 = weapon slots, − = Tab, + = Esc, Home = M |
+
+Keys are sent as hardware scan codes, which games that use DirectInput or raw input read. If
+several Wiimotes hold the same key, it stays pressed until the last one lets go. When a
+Wiimote disconnects, everything it was holding is released immediately.
+
+Existing configurations from version 1.0 receive the two new profiles automatically. Your own
+profiles are left untouched.
 
 ### Profiles and configuration file
 
@@ -204,15 +235,25 @@ out-of-range numbers are clamped.
   "right_stick": { "source": "ir.pointer", "deadzone": 0.04, "saturation": 0.85 },
   "left_trigger":  { "source": "classic.lt", "deadzone": 0.05 },
   "right_trigger": { "source": "classic.rt", "deadzone": 0.05 },
-  "rumble_enabled": true, "rumble_mode": "pwm", "rumble_threshold": 40
+  "rumble_enabled": true, "rumble_mode": "pwm", "rumble_threshold": 40,
+  "xinput_enabled": true,
+  "keys": { "wiimote.ONE": "E", "wiimote.TWO": "MOUSE_RIGHT", "wiimote.UP": "WHEEL_UP" },
+  "mouse": { "source": "ir.pointer", "mode": "absolute", "speed": 1200, "deadzone": 0.1, "curve": 1.5,
+             "invert_x": false, "invert_y": false, "smoothing": 0.5, "absolute_range": 0.7 },
+  "key_stick": { "source": "nunchuk.stick", "layout": "wasd", "threshold": 0.5 }
 }
 ```
 
 * Button sources: `wiimote.{UP,DOWN,LEFT,RIGHT,A,B,ONE,TWO,PLUS,MINUS,HOME}`, `nunchuk.{C,Z}`,
   `classic.{UP,DOWN,LEFT,RIGHT,A,B,X,Y,L,R,ZL,ZR,PLUS,MINUS,HOME}`.
 * Targets: `A B X Y LB RB LT RT BACK START GUIDE LS RS DPAD_UP DPAD_DOWN DPAD_LEFT DPAD_RIGHT NONE`.
-* Stick sources: `none`, `nunchuk.stick`, `classic.left_stick`, `classic.right_stick`,
-  `wiimote.tilt`, `nunchuk.tilt`, `ir.pointer`, `wiimote.dpad`.
+* Stick sources (also used for `mouse` and `key_stick`): `none`, `nunchuk.stick`, `classic.left_stick`,
+  `classic.right_stick`, `wiimote.tilt`, `nunchuk.tilt`, `ir.pointer`, `wiimote.dpad`.
+* Keyboard / mouse targets (`keys`): letters `A`–`Z`, digits `0`–`9`, `F1`–`F12`, `SPACE ENTER ESCAPE TAB
+  BACKSPACE LSHIFT RSHIFT LCTRL RCTRL LALT RALT LWIN UP DOWN LEFT RIGHT INSERT DELETE HOME END PAGEUP
+  PAGEDOWN CAPSLOCK MINUS EQUALS COMMA PERIOD SLASH SEMICOLON APOSTROPHE LBRACKET RBRACKET BACKSLASH GRAVE`,
+  `NUMPAD0`–`NUMPAD9`, `VOLUME_UP VOLUME_DOWN VOLUME_MUTE MEDIA_PLAY_PAUSE MEDIA_NEXT MEDIA_PREV`, and
+  `MOUSE_LEFT MOUSE_RIGHT MOUSE_MIDDLE MOUSE_X1 MOUSE_X2 WHEEL_UP WHEEL_DOWN`.
 
 ---
 
@@ -220,7 +261,7 @@ out-of-range numbers are clamped.
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m pytest                                      # 28 tests, no hardware needed
+python -m pytest                                      # 43 tests, no hardware needed
 python -m wiimote_xinput --simulate --dry-run         # full GUI fed by a simulated Wiimote + Nunchuk
 python -m wiimote_xinput --simulate                   # same, but drives a real virtual Xbox pad
 python -m wiimote_xinput --list                       # Wiimote HID devices Windows exposes
@@ -235,6 +276,7 @@ Checklist with real hardware:
 4. Open `joy.cpl` or Steam's controller tester and confirm the same there.
 5. Use Steam's controller test vibration, or any game. The Wiimote should rumble.
 6. Switch the remote off. Within about 6 s the card shows **Reconnecting**, and in-game inputs drop to neutral. Press a button to bring it back on the same virtual pad.
+7. Select **Desktop Mouse (IR pointer)** with a sensor bar powered on. Pointing moves the cursor, and B clicks. Open Notepad and confirm 1/2 send Esc/Enter.
 
 ---
 
@@ -252,6 +294,11 @@ Checklist with real hardware:
 | Stick drifts or doesn't reach the edges | Raise the **Deadzone** or lower **Outer saturation** in *Settings*. Ranges also self-calibrate as you move the stick. |
 | Tilt / IR goes the wrong way | Use the **Invert X/Y** toggles for that stick. IR needs a powered sensor bar (or two IR candles) about 1–3 m away. |
 | Frequent disconnects | Fresh batteries (below 20% the Wiimote radio gets flaky), keep line of sight, avoid USB 3.0 ports right next to a Bluetooth dongle (2.4 GHz interference), or use a DolphinBar in mode 4. |
+| Keyboard/mouse does nothing in one window, works elsewhere | Windows blocks injected input into programs running **as administrator** (UIPI). Run Wiimote → XInput as administrator too, or run the target program normally. |
+| Keys work on the desktop but a game ignores them | Some anti-cheat systems reject injected input. Use the Xbox controller output for those games. |
+| Relative mouse feels floaty or inconsistent | Turn off *Enhance pointer precision* (Windows mouse settings), then adjust speed and curve in *Settings → Mouse pointer*. |
+| Absolute cursor jitters | Increase *Smoothing*. Move closer to the sensor bar, or lower the *Pointer range* so smaller wrist movements cover the screen. |
+| Typing a game's keys also triggers the controller | In that profile, untick *Also drive the virtual Xbox controller*. |
 | "Already running" message | Another instance is in the tray. Two instances would fight over the same remote. |
 | Bluetooth adapter not found by the helper | Turn Bluetooth on. Some adapters only expose their radio after the vendor driver is installed. |
 

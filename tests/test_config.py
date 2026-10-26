@@ -1,6 +1,6 @@
 import json
 
-from wiimote_xinput.config import ConfigStore, Profile
+from wiimote_xinput.config import CONFIG_VERSION, ConfigStore, Profile
 
 
 def test_roundtrip(tmp_path):
@@ -35,7 +35,7 @@ def test_corrupt_file_is_backed_up(tmp_path):
     path.write_text("{not json")
     store = ConfigStore(path).load()
     assert store.active_profile.name == "Default"
-    assert json.loads(path.read_text())["version"] == 1
+    assert json.loads(path.read_text())["version"] == CONFIG_VERSION
     assert list(tmp_path.glob("config.corrupt-*.json"))
 
 
@@ -54,3 +54,30 @@ def test_import_export(tmp_path):
     ConfigStore.export_profile(store.active_profile, out)
     imported = store.import_profile(out)
     assert imported.name == "Default (2)"
+
+
+def test_keyboard_mouse_fields_roundtrip_and_sanitize(tmp_path):
+    store = ConfigStore(tmp_path / "c.json").load()
+    p = store.active_profile.copy("KBM")
+    p.keys = {"wiimote.A": "SPACE", "wiimote.B": "MOUSE_LEFT"}
+    p.mouse.source = "ir.pointer"
+    p.mouse.mode = "absolute"
+    p.xinput_enabled = False
+    store.put_profile(p)
+    again = ConfigStore(tmp_path / "c.json").load().profiles["KBM"]
+    assert again.keys == p.keys and again.mouse.mode == "absolute" and not again.xinput_enabled
+
+    bad = Profile.from_dict({"keys": {"wiimote.A": "NOPE", "x": "SPACE", "wiimote.B": "F5"},
+                             "mouse": {"mode": "warp", "speed": 1e9}})
+    assert bad.keys == {"wiimote.B": "F5"}
+    assert bad.mouse.mode == "relative" and bad.mouse.speed == 6000.0
+
+
+def test_v1_config_gets_keyboard_presets(tmp_path):
+    path = tmp_path / "c.json"
+    path.write_text(json.dumps({"version": 1, "settings": {}, "profiles": [{"name": "Mine"}]}))
+    store = ConfigStore(path).load()
+    assert "Mine" in store.profiles
+    assert "Desktop Mouse (IR pointer)" in store.profiles
+    assert "Default" not in store.profiles  # only the new keyboard/mouse presets are added
+    assert json.loads(path.read_text())["version"] == CONFIG_VERSION

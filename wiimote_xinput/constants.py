@@ -348,3 +348,79 @@ ORIENTATIONS = {
     "vertical": "Vertical (pointing at screen)",
     "sideways": "Sideways (NES style, D-Pad on the left)",
 }
+
+# --------------------------------------------------------------------------
+# Keyboard & mouse targets (Windows virtual-key codes)
+# --------------------------------------------------------------------------
+
+MOUSE_BUTTON_TARGETS = {
+    "MOUSE_LEFT": "Mouse: Left click",
+    "MOUSE_RIGHT": "Mouse: Right click",
+    "MOUSE_MIDDLE": "Mouse: Middle click",
+    "MOUSE_X1": "Mouse: Back (X1)",
+    "MOUSE_X2": "Mouse: Forward (X2)",
+    "WHEEL_UP": "Mouse: Wheel up",
+    "WHEEL_DOWN": "Mouse: Wheel down",
+}
+
+
+def _build_key_targets() -> dict[str, tuple[int, str]]:
+    keys: dict[str, tuple[int, str]] = {}
+    for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        keys[c] = (ord(c), c)
+    for d in "0123456789":
+        keys[d] = (ord(d), d)
+    for n in range(1, 13):
+        keys[f"F{n}"] = (0x6F + n, f"F{n}")
+    named = [
+        ("SPACE", 0x20, "Space"), ("ENTER", 0x0D, "Enter"), ("ESCAPE", 0x1B, "Esc"),
+        ("TAB", 0x09, "Tab"), ("BACKSPACE", 0x08, "Backspace"),
+        ("LSHIFT", 0xA0, "Left Shift"), ("RSHIFT", 0xA1, "Right Shift"),
+        ("LCTRL", 0xA2, "Left Ctrl"), ("RCTRL", 0xA3, "Right Ctrl"),
+        ("LALT", 0xA4, "Left Alt"), ("RALT", 0xA5, "Right Alt"), ("LWIN", 0x5B, "Windows key"),
+        ("UP", 0x26, "Arrow Up"), ("DOWN", 0x28, "Arrow Down"),
+        ("LEFT", 0x25, "Arrow Left"), ("RIGHT", 0x27, "Arrow Right"),
+        ("INSERT", 0x2D, "Insert"), ("DELETE", 0x2E, "Delete"), ("HOME", 0x24, "Home"),
+        ("END", 0x23, "End"), ("PAGEUP", 0x21, "Page Up"), ("PAGEDOWN", 0x22, "Page Down"),
+        ("CAPSLOCK", 0x14, "Caps Lock"), ("MINUS", 0xBD, "- (minus)"), ("EQUALS", 0xBB, "= (equals)"),
+        ("COMMA", 0xBC, ", (comma)"), ("PERIOD", 0xBE, ". (period)"), ("SLASH", 0xBF, "/ (slash)"),
+        ("SEMICOLON", 0xBA, "; (semicolon)"), ("APOSTROPHE", 0xDE, "' (apostrophe)"),
+        ("LBRACKET", 0xDB, "[ (left bracket)"), ("RBRACKET", 0xDD, "] (right bracket)"),
+        ("BACKSLASH", 0xDC, "\\ (backslash)"), ("GRAVE", 0xC0, "` (grave / console)"),
+        ("NUMPAD0", 0x60, "Numpad 0"), ("NUMPAD1", 0x61, "Numpad 1"), ("NUMPAD2", 0x62, "Numpad 2"),
+        ("NUMPAD3", 0x63, "Numpad 3"), ("NUMPAD4", 0x64, "Numpad 4"), ("NUMPAD5", 0x65, "Numpad 5"),
+        ("NUMPAD6", 0x66, "Numpad 6"), ("NUMPAD7", 0x67, "Numpad 7"), ("NUMPAD8", 0x68, "Numpad 8"),
+        ("NUMPAD9", 0x69, "Numpad 9"),
+        ("VOLUME_UP", 0xAF, "Volume up"), ("VOLUME_DOWN", 0xAE, "Volume down"),
+        ("VOLUME_MUTE", 0xAD, "Volume mute"), ("MEDIA_PLAY_PAUSE", 0xB3, "Media play/pause"),
+        ("MEDIA_NEXT", 0xB0, "Media next track"), ("MEDIA_PREV", 0xB1, "Media previous track"),
+    ]
+    for name, vk, label in named:
+        keys[name] = (vk, label)
+    return keys
+
+
+# name -> (virtual-key code, label)
+KEY_TARGETS: dict[str, tuple[int, str]] = _build_key_targets()
+
+# Keys that need KEYEVENTF_EXTENDEDKEY when sent as scan codes
+EXTENDED_VKS = frozenset({
+    0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E,  # nav cluster + arrows
+    0xA3, 0xA5, 0x5B,  # right ctrl, right alt, windows key
+    0xAD, 0xAE, 0xAF, 0xB0, 0xB1, 0xB3,  # media / volume
+})
+
+# Combined keyboard/mouse target labels, in UI order ("NONE" first)
+KBM_TARGET_LABELS: dict[str, str] = {"NONE": "(none)"}
+KBM_TARGET_LABELS.update(MOUSE_BUTTON_TARGETS)
+KBM_TARGET_LABELS.update({name: f"Key: {label}" for name, (_vk, label) in KEY_TARGETS.items()})
+
+MOUSE_MODES = {
+    "relative": "Relative (stick/tilt moves the cursor; best for games)",
+    "absolute": "Absolute (IR pointer = cursor position; best for desktop)",
+}
+
+KEY_STICK_LAYOUTS = {
+    "wasd": "W A S D",
+    "arrows": "Arrow keys",
+}

@@ -19,6 +19,9 @@ from typing import Any
 
 from .constants import (
     BUTTON_SOURCES,
+    KBM_TARGET_LABELS,
+    KEY_STICK_LAYOUTS,
+    MOUSE_MODES,
     ORIENTATIONS,
     STICK_SOURCES,
     TRIGGER_SOURCES,
@@ -28,7 +31,7 @@ from .constants import (
 log = logging.getLogger(__name__)
 
 APP_NAME = "WiimoteXInput"
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2  # v2: keyboard & mouse output
 
 
 def config_dir() -> Path:
@@ -94,6 +97,58 @@ class TriggerConfig:
         )
 
 
+@dataclass
+class MouseConfig:
+    """Drive the Windows mouse pointer from an analog source."""
+
+    source: str = "none"  # any STICK_SOURCES key
+    mode: str = "relative"  # "relative" or "absolute" (absolute needs ir.pointer)
+    speed: float = 1200.0  # relative mode: pixels per second at full deflection
+    deadzone: float = 0.1
+    curve: float = 1.5  # >1 gives precise slow movement and fast flicks
+    invert_x: bool = False
+    invert_y: bool = False
+    smoothing: float = 0.5  # absolute mode: 0 = raw, 0.9 = very smooth (reduces IR jitter)
+    absolute_range: float = 0.7  # absolute mode: pointer travel that spans the whole screen
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None, default: "MouseConfig") -> "MouseConfig":
+        d = d or {}
+        source = d.get("source", default.source)
+        mode = d.get("mode", default.mode)
+        return cls(
+            source=source if source in STICK_SOURCES else default.source,
+            mode=mode if mode in MOUSE_MODES else default.mode,
+            speed=_clampf(d.get("speed"), 50.0, 6000.0, default.speed),
+            deadzone=_clampf(d.get("deadzone"), 0.0, 0.9, default.deadzone),
+            curve=_clampf(d.get("curve"), 0.3, 3.0, default.curve),
+            invert_x=_bool(d.get("invert_x"), default.invert_x),
+            invert_y=_bool(d.get("invert_y"), default.invert_y),
+            smoothing=_clampf(d.get("smoothing"), 0.0, 0.95, default.smoothing),
+            absolute_range=_clampf(d.get("absolute_range"), 0.2, 1.0, default.absolute_range),
+        )
+
+
+@dataclass
+class KeyStickConfig:
+    """Turn an analog source into four direction keys (WASD / arrows)."""
+
+    source: str = "none"
+    layout: str = "wasd"
+    threshold: float = 0.5  # deflection needed to press a direction key
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None, default: "KeyStickConfig") -> "KeyStickConfig":
+        d = d or {}
+        source = d.get("source", default.source)
+        layout = d.get("layout", default.layout)
+        return cls(
+            source=source if source in STICK_SOURCES else default.source,
+            layout=layout if layout in KEY_STICK_LAYOUTS else default.layout,
+            threshold=_clampf(d.get("threshold"), 0.1, 0.95, default.threshold),
+        )
+
+
 DEFAULT_BUTTONS: dict[str, str] = {
     # Wiimote (vertical)
     "wiimote.UP": "DPAD_UP",
@@ -144,9 +199,19 @@ class Profile:
     rumble_enabled: bool = True
     rumble_mode: str = "pwm"  # "pwm" (intensity via duty cycle) or "threshold"
     rumble_threshold: int = 40  # 0..255 motor level below which rumble is off
+    # Keyboard & mouse output (works alongside, or instead of, the Xbox pad)
+    xinput_enabled: bool = True  # False: the virtual pad stays idle (pure keyboard/mouse)
+    keys: dict[str, str] = field(default_factory=dict)  # button source -> KBM_TARGET_LABELS key
+    mouse: MouseConfig = field(default_factory=MouseConfig)
+    key_stick: KeyStickConfig = field(default_factory=KeyStickConfig)
 
     def needs_ir(self) -> bool:
-        return "ir.pointer" in (self.left_stick.source, self.right_stick.source)
+        return "ir.pointer" in (
+            self.left_stick.source,
+            self.right_stick.source,
+            self.mouse.source,
+            self.key_stick.source,
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -165,6 +230,14 @@ class Profile:
             }
         else:
             buttons = dict(base.buttons)
+        keys_in = d.get("keys")
+        keys = {}
+        if isinstance(keys_in, dict):
+            keys = {
+                src: tgt
+                for src, tgt in keys_in.items()
+                if src in BUTTON_SOURCES and tgt in KBM_TARGET_LABELS and tgt != "NONE"
+            }
         mode = d.get("rumble_mode", base.rumble_mode)
         return cls(
             name=name,
@@ -180,6 +253,10 @@ class Profile:
             rumble_enabled=_bool(d.get("rumble_enabled"), base.rumble_enabled),
             rumble_mode=mode if mode in ("pwm", "threshold") else base.rumble_mode,
             rumble_threshold=int(_clampf(d.get("rumble_threshold"), 0, 255, base.rumble_threshold)),
+            xinput_enabled=_bool(d.get("xinput_enabled"), base.xinput_enabled),
+            keys=keys,
+            mouse=MouseConfig.from_dict(d.get("mouse"), base.mouse),
+            key_stick=KeyStickConfig.from_dict(d.get("key_stick"), base.key_stick),
         )
 
     def copy(self, name: str | None = None) -> "Profile":
@@ -214,7 +291,49 @@ def default_profiles() -> dict[str, Profile]:
     pointer = Profile(name="IR Pointer (right stick)")
     pointer.right_stick = StickConfig(source="ir.pointer", deadzone=0.04, saturation=0.85)
 
-    return {p.name: p for p in (default, sideways, racing, pointer)}
+    desktop = Profile(name="Desktop Mouse (IR pointer)", xinput_enabled=False)
+    desktop.left_stick = StickConfig(source="none")
+    desktop.right_stick = StickConfig(source="none")
+    desktop.mouse = MouseConfig(source="ir.pointer", mode="absolute")
+    desktop.key_stick = KeyStickConfig(source="nunchuk.stick", layout="arrows")
+    desktop.keys = {
+        "wiimote.B": "MOUSE_LEFT",
+        "wiimote.A": "MOUSE_RIGHT",
+        "wiimote.UP": "WHEEL_UP",
+        "wiimote.DOWN": "WHEEL_DOWN",
+        "wiimote.LEFT": "MOUSE_X1",
+        "wiimote.RIGHT": "MOUSE_X2",
+        "wiimote.MINUS": "VOLUME_DOWN",
+        "wiimote.PLUS": "VOLUME_UP",
+        "wiimote.HOME": "LWIN",
+        "wiimote.ONE": "ESCAPE",
+        "wiimote.TWO": "ENTER",
+        "nunchuk.C": "MOUSE_MIDDLE",
+        "nunchuk.Z": "LCTRL",
+    }
+
+    fps = Profile(name="Keyboard & Mouse FPS (Nunchuk WASD)", xinput_enabled=False)
+    fps.left_stick = StickConfig(source="none")
+    fps.right_stick = StickConfig(source="none")
+    fps.mouse = MouseConfig(source="ir.pointer", mode="relative", speed=1400.0, deadzone=0.15, curve=1.6)
+    fps.key_stick = KeyStickConfig(source="nunchuk.stick", layout="wasd")
+    fps.keys = {
+        "wiimote.B": "MOUSE_LEFT",
+        "wiimote.A": "MOUSE_RIGHT",
+        "nunchuk.C": "SPACE",
+        "nunchuk.Z": "LCTRL",
+        "wiimote.UP": "R",
+        "wiimote.DOWN": "LSHIFT",
+        "wiimote.LEFT": "Q",
+        "wiimote.RIGHT": "E",
+        "wiimote.ONE": "1",
+        "wiimote.TWO": "2",
+        "wiimote.MINUS": "TAB",
+        "wiimote.PLUS": "ESCAPE",
+        "wiimote.HOME": "M",
+    }
+
+    return {p.name: p for p in (default, sideways, racing, pointer, desktop, fps)}
 
 
 @dataclass
@@ -286,6 +405,14 @@ class ConfigStore:
                 if isinstance(item, dict):
                     p = Profile.from_dict(item)
                     profiles[p.name] = p
+            version = raw.get("version", 1)
+            if profiles and isinstance(version, int) and version < 2:
+                # Offer the keyboard & mouse presets introduced in v2 once.
+                for name, p in default_profiles().items():
+                    if not p.xinput_enabled and name not in profiles:
+                        profiles[name] = p
+                self.profiles = profiles
+                self.save()
             self.profiles = profiles or default_profiles()
             if self.settings.active_profile not in self.profiles:
                 self.settings.active_profile = next(iter(self.profiles))

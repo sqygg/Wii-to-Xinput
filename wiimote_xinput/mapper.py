@@ -1,4 +1,5 @@
-"""Translate a decoded :class:`WiimoteState` into an XInput gamepad state.
+"""Translate a decoded :class:`WiimoteState` into an XInput gamepad state
+and/or keyboard & mouse actions.
 
 A :class:`Mapper` "compiles" a :class:`Profile` into flat lookup tables once,
 so the per-report hot path is a handful of integer operations.
@@ -9,13 +10,14 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from .config import Profile, StickConfig, TriggerConfig
+from .config import MouseConfig, Profile, StickConfig, TriggerConfig
 from .constants import (
     BTN_DOWN,
     BTN_LEFT,
     BTN_RIGHT,
     BTN_UP,
     BUTTON_SOURCES,
+    KBM_TARGET_LABELS,
     XINPUT_TARGETS,
 )
 from .parser import WiimoteState
@@ -37,6 +39,23 @@ class XInputState:
 
 
 NEUTRAL = XInputState()
+
+
+@dataclass(frozen=True)
+class KbmState:
+    """Keyboard & mouse output requested by the current Wiimote state."""
+
+    keys: frozenset[str] = frozenset()  # KEY_TARGETS / MOUSE_BUTTON_TARGETS names held down
+    mouse_velocity: tuple[float, float] = (0.0, 0.0)  # relative mode, -1..1 (+Y = up)
+    mouse_absolute: tuple[float, float] | None = None  # absolute mode, -1..1 (+Y = up)
+
+
+KBM_IDLE = KbmState()
+
+KEY_STICK_KEYS = {
+    "wasd": ("W", "S", "A", "D"),  # up, down, left, right
+    "arrows": ("UP", "DOWN", "LEFT", "RIGHT"),
+}
 
 _DPAD_MASK = BTN_UP | BTN_DOWN | BTN_LEFT | BTN_RIGHT
 
@@ -130,16 +149,27 @@ class Mapper:
             tgt_mask, trigger = XINPUT_TARGETS[target]
             if tgt_mask or trigger:
                 compiled.append((group, src_mask, tgt_mask, trigger))
+        keys = tuple(
+            (BUTTON_SOURCES[src][0], BUTTON_SOURCES[src][1], tgt)
+            for src, tgt in profile.keys.items()
+            if src in BUTTON_SOURCES and tgt in KBM_TARGET_LABELS and tgt != "NONE"
+        )
+        m = profile.mouse
+        mouse_curve = StickConfig(
+            deadzone=m.deadzone, saturation=1.0, curve=m.curve, invert_x=m.invert_x, invert_y=m.invert_y
+        )
         # Assigned last and as one object, so a concurrent map() call sees
         # either the old or the new profile, never a mix.
-        self._compiled = (profile, tuple(compiled), profile.orientation == "sideways")
+        self._compiled = (profile, tuple(compiled), profile.orientation == "sideways", keys, mouse_curve)
 
     @property
     def profile(self) -> Profile:
         return self._compiled[0]
 
-    def _stick(self, state: WiimoteState, cfg: StickConfig, core: int, sideways: bool) -> Vec2:
-        src = cfg.source
+    @staticmethod
+    def _raw_source(state: WiimoteState, src: str, core: int, sideways: bool, tilt_range: float) -> Vec2 | None:
+        """Raw analog value of a source, or None when it has no data (e.g.
+        the IR camera currently sees no sensor bar)."""
         if src == "nunchuk.stick":
             raw = state.nunchuk.stick if state.nunchuk else (0.0, 0.0)
         elif src == "classic.left_stick":
@@ -147,14 +177,20 @@ class Mapper:
         elif src == "classic.right_stick":
             raw = state.classic.right if state.classic else (0.0, 0.0)
         elif src == "wiimote.tilt":
-            raw = tilt_to_stick(state.accel, sideways, cfg.tilt_range_deg)
+            raw = tilt_to_stick(state.accel, sideways, tilt_range)
         elif src == "nunchuk.tilt":
-            raw = tilt_to_stick(state.nunchuk.accel if state.nunchuk else None, False, cfg.tilt_range_deg)
+            raw = tilt_to_stick(state.nunchuk.accel if state.nunchuk else None, False, tilt_range)
         elif src == "ir.pointer":
-            raw = state.pointer or (0.0, 0.0)
+            raw = state.pointer
         elif src == "wiimote.dpad":
             raw = dpad_to_stick(core)
         else:
+            raw = None
+        return raw
+
+    def _stick(self, state: WiimoteState, cfg: StickConfig, core: int, sideways: bool) -> Vec2:
+        raw = self._raw_source(state, cfg.source, core, sideways, cfg.tilt_range_deg)
+        if raw is None:
             return 0.0, 0.0
         return apply_stick_response(raw[0], raw[1], cfg)
 
@@ -169,7 +205,10 @@ class Mapper:
         return 0.0
 
     def map(self, state: WiimoteState) -> XInputState:
-        profile, compiled, sideways = self._compiled
+        return self.map_all(state)[0]
+
+    def map_all(self, state: WiimoteState) -> tuple[XInputState, KbmState]:
+        profile, compiled, sideways, key_binds, mouse_curve = self._compiled
 
         core = state.buttons
         if sideways:
@@ -179,7 +218,49 @@ class Mapper:
             "nunchuk": state.nunchuk.buttons if state.nunchuk else 0,
             "classic": state.classic.buttons if state.classic else 0,
         }
+        kbm = self._map_kbm(state, profile, groups, key_binds, mouse_curve, core, sideways)
+        if not profile.xinput_enabled:
+            return NEUTRAL, kbm
+        return self._map_xinput(state, profile, compiled, groups, core, sideways), kbm
 
+    def _map_kbm(self, state, profile: Profile, groups, key_binds, mouse_curve: StickConfig, core, sideways) -> KbmState:
+        if not key_binds and profile.mouse.source == "none" and profile.key_stick.source == "none":
+            return KBM_IDLE
+        held = {tgt for group, mask, tgt in key_binds if groups[group] & mask}
+
+        ks = profile.key_stick
+        if ks.source != "none":
+            raw = self._raw_source(state, ks.source, core, sideways, 45.0)
+            if raw is not None:
+                up, down, left, right = KEY_STICK_KEYS[ks.layout]
+                x, y = raw
+                if y >= ks.threshold:
+                    held.add(up)
+                elif y <= -ks.threshold:
+                    held.add(down)
+                if x <= -ks.threshold:
+                    held.add(left)
+                elif x >= ks.threshold:
+                    held.add(right)
+
+        velocity: Vec2 = (0.0, 0.0)
+        absolute: Vec2 | None = None
+        m: MouseConfig = profile.mouse
+        if m.source != "none":
+            raw = self._raw_source(state, m.source, core, sideways, 45.0)
+            if raw is not None:
+                if m.mode == "absolute":
+                    x = -raw[0] if m.invert_x else raw[0]
+                    y = -raw[1] if m.invert_y else raw[1]
+                    absolute = (
+                        max(-1.0, min(1.0, x / m.absolute_range)),
+                        max(-1.0, min(1.0, y / m.absolute_range)),
+                    )
+                else:
+                    velocity = apply_stick_response(raw[0], raw[1], mouse_curve)
+        return KbmState(frozenset(held), velocity, absolute)
+
+    def _map_xinput(self, state, profile: Profile, compiled, groups, core, sideways) -> XInputState:
         buttons = 0
         lt_digital = rt_digital = False
         for group, src_mask, tgt_mask, trigger in compiled:
