@@ -104,6 +104,18 @@ CORE_BUTTON_MASK = 0x1F9F  # the remaining bits carry accelerometer LSBs
 NUN_Z = 0x01
 NUN_C = 0x02
 
+# Motion gestures (our own mask, produced by motion.MotionDetector)
+MOT_WIIMOTE_SHAKE = 0x0001
+MOT_WIIMOTE_TILT_LEFT = 0x0002
+MOT_WIIMOTE_TILT_RIGHT = 0x0004
+MOT_WIIMOTE_TILT_UP = 0x0008
+MOT_WIIMOTE_TILT_DOWN = 0x0010
+MOT_NUNCHUK_SHAKE = 0x0100
+MOT_NUNCHUK_TILT_LEFT = 0x0200
+MOT_NUNCHUK_TILT_RIGHT = 0x0400
+MOT_NUNCHUK_TILT_UP = 0x0800
+MOT_NUNCHUK_TILT_DOWN = 0x1000
+
 # Classic Controller buttons. Combined mask = ~((ext[4] << 8) | ext[5])
 CC_RIGHT = 0x8000
 CC_DOWN = 0x4000
@@ -294,6 +306,16 @@ BUTTON_SOURCES: dict[str, tuple[str, int]] = {
     "classic.PLUS": ("classic", CC_PLUS),
     "classic.MINUS": ("classic", CC_MINUS),
     "classic.HOME": ("classic", CC_HOME),
+    "motion.WIIMOTE_SHAKE": ("motion", MOT_WIIMOTE_SHAKE),
+    "motion.WIIMOTE_TILT_LEFT": ("motion", MOT_WIIMOTE_TILT_LEFT),
+    "motion.WIIMOTE_TILT_RIGHT": ("motion", MOT_WIIMOTE_TILT_RIGHT),
+    "motion.WIIMOTE_TILT_UP": ("motion", MOT_WIIMOTE_TILT_UP),
+    "motion.WIIMOTE_TILT_DOWN": ("motion", MOT_WIIMOTE_TILT_DOWN),
+    "motion.NUNCHUK_SHAKE": ("motion", MOT_NUNCHUK_SHAKE),
+    "motion.NUNCHUK_TILT_LEFT": ("motion", MOT_NUNCHUK_TILT_LEFT),
+    "motion.NUNCHUK_TILT_RIGHT": ("motion", MOT_NUNCHUK_TILT_RIGHT),
+    "motion.NUNCHUK_TILT_UP": ("motion", MOT_NUNCHUK_TILT_UP),
+    "motion.NUNCHUK_TILT_DOWN": ("motion", MOT_NUNCHUK_TILT_DOWN),
 }
 
 SOURCE_LABELS = {
@@ -325,6 +347,16 @@ SOURCE_LABELS = {
     "classic.PLUS": "Plus (+)",
     "classic.MINUS": "Minus (-)",
     "classic.HOME": "Home",
+    "motion.WIIMOTE_SHAKE": "Wiimote: shake",
+    "motion.WIIMOTE_TILT_LEFT": "Wiimote: tilt left",
+    "motion.WIIMOTE_TILT_RIGHT": "Wiimote: tilt right",
+    "motion.WIIMOTE_TILT_UP": "Wiimote: tilt up (point up)",
+    "motion.WIIMOTE_TILT_DOWN": "Wiimote: tilt down (point down)",
+    "motion.NUNCHUK_SHAKE": "Nunchuk: shake",
+    "motion.NUNCHUK_TILT_LEFT": "Nunchuk: tilt left",
+    "motion.NUNCHUK_TILT_RIGHT": "Nunchuk: tilt right",
+    "motion.NUNCHUK_TILT_UP": "Nunchuk: tilt up",
+    "motion.NUNCHUK_TILT_DOWN": "Nunchuk: tilt down",
 }
 
 STICK_SOURCES = {

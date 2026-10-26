@@ -7,6 +7,7 @@ else that speaks XInput see a normal wired Xbox 360 pad. No per-game setup is ne
 * Native Bluetooth HID: no Dolphin, no GlovePIE. Works with `RVL-CNT-01` and `RVL-CNT-01-TR` (Wii Remote Plus), and with a DolphinBar in mode 4.
 * Nunchuk and Classic Controller / Classic Controller Pro are detected automatically, including hot-plugging, and use their factory calibration.
 * Accelerometer tilt steering, an IR pointer mapped to a stick, and D-Pad-as-stick.
+* **Bindable motion gestures**: shake, and tilt left/right/up/down, on both the Wiimote and the Nunchuk. Each gesture works like an extra button and can press any Xbox button, key or mouse button.
 * **Keyboard & mouse output**, alongside the Xbox pad or instead of it. Any button can press a key or mouse button, or scroll the wheel. The IR pointer, a stick or tilt can move the mouse cursor, and a stick can press WASD or the arrow keys. This works in games that don't support controllers, and on the desktop.
 * Game rumble is forwarded to the Wiimote motor, with variable intensity done by pulse-width modulation.
 * Up to 4 remotes. Each one gets its own virtual controller and player LED.
@@ -61,6 +62,7 @@ wiimote_xinput/
 ├── bluetooth_core.py  WiimoteSession (protocol state machine) + DeviceManager (discovery, slots)
 ├── bt_pairing.py      Win32 Bluetooth API pairing helper (binary PIN, HID service enable)
 ├── parser.py          Pure report parsing: buttons, accel, Nunchuk, Classic, IR, status, calibration
+├── motion.py          Shake / tilt gesture detection (hysteresis, hold time, swing rejection)
 ├── mapper.py          Profile → XInput + keyboard/mouse translation, deadzones, curves, tilt, sideways rotation
 ├── kbm_output.py      Keyboard & mouse injection via SendInput (scan codes, sub-pixel motion, shared key counts)
 ├── config.py          Profiles and settings dataclasses, validated JSON persistence
@@ -189,6 +191,30 @@ Built-in profiles: **Default**, **Sideways (NES style)** (D-Pad rotated, 2 = A, 
 **Sideways Racing** (tilt steering, 2 = RT accelerator, 1 = LT brake), **IR Pointer**
 (sensor bar aims with the right stick), and the two keyboard & mouse profiles below.
 
+### Motion gestures
+
+The **Motion gestures** box at the bottom of the **Mapping** tab lists ten gestures. Bind each
+one like a physical button, to an Xbox button, a key, a mouse button, or both:
+
+| Gesture | Detected when |
+|---|---|
+| Wiimote / Nunchuk **shake** | the acceleration differs from normal gravity by more than the threshold (a waggle, a swing, a flick) |
+| Wiimote / Nunchuk **tilt left / right** | the remote is rolled past the tilt angle. In sideways mode, the Wiimote is turned like a steering wheel |
+| Wiimote / Nunchuk **tilt up / down** | the remote is pointed up or down past the tilt angle |
+
+Examples: shake the Wiimote to reload (`motion.WIIMOTE_SHAKE` → `R`), shake the Nunchuk to dodge
+(`motion.NUNCHUK_SHAKE` → `B`), lean the Wiimote to peek (`motion.WIIMOTE_TILT_LEFT` → `Q`,
+`…_TILT_RIGHT` → `E`), or point the remote down to crouch.
+
+*Settings → Motion gestures* adjusts how strong a shake must be, how long a shake stays pressed
+(so a quick waggle registers as one press), and the tilt angle. Tilt releases a few degrees
+below the trigger angle, so it doesn't flicker on and off at the edge. Tilt is also ignored
+while the remote is being swung, so a shake doesn't fire random tilt directions. Untick
+*Detect shake and tilt gestures* to turn all of this off for a profile.
+
+Tilt as a continuous analog input, rather than a press, is still available as a stick, mouse
+or movement-key source (`wiimote.tilt` / `nunchuk.tilt`).
+
 ### Keyboard & mouse mode
 
 Every button row in the **Mapping** tab has two columns: **Xbox controller** and
@@ -240,12 +266,15 @@ out-of-range numbers are clamped.
   "keys": { "wiimote.ONE": "E", "wiimote.TWO": "MOUSE_RIGHT", "wiimote.UP": "WHEEL_UP" },
   "mouse": { "source": "ir.pointer", "mode": "absolute", "speed": 1200, "deadzone": 0.1, "curve": 1.5,
              "invert_x": false, "invert_y": false, "smoothing": 0.5, "absolute_range": 0.7 },
-  "key_stick": { "source": "nunchuk.stick", "layout": "wasd", "threshold": 0.5 }
+  "key_stick": { "source": "nunchuk.stick", "layout": "wasd", "threshold": 0.5 },
+  "motion": { "enabled": true, "shake_threshold_g": 1.0, "shake_hold_s": 0.2, "tilt_angle_deg": 30 }
 }
 ```
 
 * Button sources: `wiimote.{UP,DOWN,LEFT,RIGHT,A,B,ONE,TWO,PLUS,MINUS,HOME}`, `nunchuk.{C,Z}`,
-  `classic.{UP,DOWN,LEFT,RIGHT,A,B,X,Y,L,R,ZL,ZR,PLUS,MINUS,HOME}`.
+  `classic.{UP,DOWN,LEFT,RIGHT,A,B,X,Y,L,R,ZL,ZR,PLUS,MINUS,HOME}`, and the motion gestures
+  `motion.{WIIMOTE,NUNCHUK}_{SHAKE,TILT_LEFT,TILT_RIGHT,TILT_UP,TILT_DOWN}`. Gestures work in
+  both `buttons` and `keys`.
 * Targets: `A B X Y LB RB LT RT BACK START GUIDE LS RS DPAD_UP DPAD_DOWN DPAD_LEFT DPAD_RIGHT NONE`.
 * Stick sources (also used for `mouse` and `key_stick`): `none`, `nunchuk.stick`, `classic.left_stick`,
   `classic.right_stick`, `wiimote.tilt`, `nunchuk.tilt`, `ir.pointer`, `wiimote.dpad`.
@@ -261,7 +290,7 @@ out-of-range numbers are clamped.
 
 ```powershell
 pip install -r requirements-dev.txt
-python -m pytest                                      # 43 tests, no hardware needed
+python -m pytest                                      # 52 tests, no hardware needed
 python -m wiimote_xinput --simulate --dry-run         # full GUI fed by a simulated Wiimote + Nunchuk
 python -m wiimote_xinput --simulate                   # same, but drives a real virtual Xbox pad
 python -m wiimote_xinput --list                       # Wiimote HID devices Windows exposes
@@ -294,6 +323,8 @@ Checklist with real hardware:
 | Stick drifts or doesn't reach the edges | Raise the **Deadzone** or lower **Outer saturation** in *Settings*. Ranges also self-calibrate as you move the stick. |
 | Tilt / IR goes the wrong way | Use the **Invert X/Y** toggles for that stick. IR needs a powered sensor bar (or two IR candles) about 1–3 m away. |
 | Frequent disconnects | Fresh batteries (below 20% the Wiimote radio gets flaky), keep line of sight, avoid USB 3.0 ports right next to a Bluetooth dongle (2.4 GHz interference), or use a DolphinBar in mode 4. |
+| Shake fires too easily, or not at all | Raise or lower *Shake strength needed* in *Settings → Motion gestures*. Around 0.6 g catches gentle waggles; 1.5 g or more needs a hard swing. |
+| Tilt left/right are swapped for how you hold it | Swap the two bindings. Tilt directions follow the remote's own axes, as shown live on the dashboard ("Wiimote tilt right"). |
 | Keyboard/mouse does nothing in one window, works elsewhere | Windows blocks injected input into programs running **as administrator** (UIPI). Run Wiimote → XInput as administrator too, or run the target program normally. |
 | Keys work on the desktop but a game ignores them | Some anti-cheat systems reject injected input. Use the Xbox controller output for those games. |
 | Relative mouse feels floaty or inconsistent | Turn off *Enhance pointer precision* (Windows mouse settings), then adjust speed and curve in *Settings → Mouse pointer*. |

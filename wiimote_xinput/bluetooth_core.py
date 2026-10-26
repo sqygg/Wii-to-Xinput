@@ -50,6 +50,7 @@ from .constants import (
 from .hid_transport import DeviceDisconnected, HidTransport, Transport, WiimoteHidInfo, enumerate_wiimotes
 from .kbm_output import KeyboardMouseOutput
 from .mapper import KBM_IDLE, NEUTRAL, KbmState, Mapper, XInputState
+from .motion import MotionDetector
 from .parser import (
     EMPTY_STATE,
     AccelCalibration,
@@ -143,6 +144,7 @@ class WiimoteSession(threading.Thread):
         self._transport: Transport | None = None
         self._pad: VirtualPad | None = None
         self._kbm = kbm_factory() if kbm_factory is not None else None
+        self._motion = MotionDetector()
         self.ever_connected = False
 
         # Device state (written by the session thread only)
@@ -281,6 +283,7 @@ class WiimoteSession(threading.Thread):
         self.output = NEUTRAL
         self.state = EMPTY_STATE
         self.kbm = KBM_IDLE
+        self._motion.reset()
         self._rumble_on = False
         if self._kbm is not None:
             try:
@@ -433,7 +436,11 @@ class WiimoteSession(threading.Thread):
             dots = tuple(parse_ir(rep.ir_raw))
             pointer = ir_pointer(dots)
 
-        state = WiimoteState(buttons, accel, nunchuk, classic, dots, pointer)
+        profile = self._mapper.profile
+        motion = self._motion.update(
+            accel, nunchuk.accel if nunchuk else None, profile.orientation == "sideways", profile.motion
+        )
+        state = WiimoteState(buttons, accel, nunchuk, classic, dots, pointer, motion)
         out, kbm = self._mapper.map_all(state)
         if self._pad is not None and out != self.output:
             self._pad.submit(out)

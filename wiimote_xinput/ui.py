@@ -424,7 +424,10 @@ class MainWindow(QMainWindow):
         grid.addWidget(button_group("Wii Remote buttons", "wiimote."), 2, 0)
         grid.addWidget(button_group("Nunchuk buttons", "nunchuk."), 3, 0)
         grid.addWidget(button_group("Classic Controller buttons", "classic."), 2, 1, 2, 1)
-        grid.setRowStretch(4, 1)
+        motion_box = button_group("Motion gestures (shake / tilt)", "motion.")
+        motion_box.setToolTip("Sensitivity is set in Settings → Motion gestures")
+        grid.addWidget(motion_box, 4, 0, 1, 2)
+        grid.setRowStretch(5, 1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -552,8 +555,28 @@ class MainWindow(QMainWindow):
         mform.addRow("Movement key threshold", self.key_threshold)
         grid.addWidget(mouse, 2, 0, 1, 2)
 
-        grid.addWidget(app, 3, 0, 1, 2)
-        grid.setRowStretch(4, 1)
+        motion = QGroupBox("Motion gestures")
+        moform = QFormLayout(motion)
+        self.motion_enabled = QCheckBox("Detect shake and tilt gestures (bind them in the Mapping tab)")
+        self.motion_enabled.toggled.connect(lambda v: self._set_sub("motion", "enabled", v))
+        moform.addRow(self.motion_enabled)
+        self.motion_widgets: dict[str, LabeledSlider] = {
+            "shake_threshold_g": LabeledSlider(0.3, 2.5, 0.05, "{:.2f} g"),
+            "shake_hold_s": LabeledSlider(0.05, 1.0, 0.05, "{:.2f} s"),
+            "tilt_angle_deg": LabeledSlider(10, 80, 1, "{:.0f}°"),
+        }
+        for attr, label in (
+            ("shake_threshold_g", "Shake strength needed (lower = more sensitive)"),
+            ("shake_hold_s", "Shake press duration"),
+            ("tilt_angle_deg", "Tilt angle needed"),
+        ):
+            w = self.motion_widgets[attr]
+            w.valueChanged.connect(lambda v, a=attr: self._set_sub("motion", a, v))
+            moform.addRow(label, w)
+        grid.addWidget(motion, 3, 0, 1, 2)
+
+        grid.addWidget(app, 4, 0, 1, 2)
+        grid.setRowStretch(5, 1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -755,6 +778,9 @@ class MainWindow(QMainWindow):
             else:
                 self._set_checked(w, getattr(p.mouse, attr))
         self.key_threshold.setValue(p.key_stick.threshold)
+        self._set_checked(self.motion_enabled, p.motion.enabled)
+        for attr, w in self.motion_widgets.items():
+            w.setValue(getattr(p.motion, attr))
         for which, combo in self.stick_combos.items():
             self._select_data(combo, getattr(p, which).source)
         for which, combo in self.trigger_combos.items():

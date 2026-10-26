@@ -135,3 +135,20 @@ def test_keyboard_mouse_profile_end_to_end(tmp_path):
         assert downs == ups  # nothing left held down after the drop
     finally:
         mgr.stop()
+
+
+def test_tilt_gesture_presses_bound_button(tmp_path):
+    from wiimote_xinput.constants import XUSB_Y
+
+    transport, pads = SimulatedTransport(), []
+    store, mgr = make_manager(tmp_path, transport, pads)
+    p = store.active_profile.copy()
+    p.buttons = {"motion.WIIMOTE_TILT_RIGHT": "Y"}  # only the gesture can press Y
+    store.put_profile(p, save=False)
+    mgr.start()
+    try:
+        # The simulator slowly rocks the remote left and right (about ±43°).
+        assert wait_until(lambda: pads and pads[0].last.buttons & XUSB_Y, timeout=8.0)
+        assert wait_until(lambda: pads[0].last.buttons == 0, timeout=8.0)  # released when it rocks back
+    finally:
+        mgr.stop()

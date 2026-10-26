@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
 
 from .bluetooth_core import ConnectionStatus, SessionInfo
 from .constants import (
+    BUTTON_SOURCES,
+    SOURCE_LABELS,
     BTN_A,
     BTN_B,
     BTN_DOWN,
@@ -245,6 +247,12 @@ def describe_input(state: WiimoteState) -> str:
             parts.append("C")
         if state.nunchuk.z:
             parts.append("Z")
+    if state.motion:
+        parts += [
+            SOURCE_LABELS[name].replace(": ", " ")
+            for name, (group, mask) in BUTTON_SOURCES.items()
+            if group == "motion" and state.motion & mask
+        ]
     if state.classic and state.classic.buttons:
         parts.append(f"CC:{state.classic.buttons:04X}")
     text = " ".join(parts) or "—"

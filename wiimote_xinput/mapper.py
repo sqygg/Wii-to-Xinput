@@ -20,6 +20,7 @@ from .constants import (
     KBM_TARGET_LABELS,
     XINPUT_TARGETS,
 )
+from .motion import tilt_angles
 from .parser import WiimoteState
 
 Vec2 = tuple[float, float]
@@ -116,14 +117,8 @@ def tilt_to_stick(accel: tuple[float, float, float] | None, sideways: bool, rang
     """
     if accel is None:
         return 0.0, 0.0
-    gx, gy, gz = accel
     lim = math.radians(range_deg)
-    if sideways:
-        ax = math.atan2(gy, abs(gx) or 1e-6)
-        ay = math.atan2(gz, abs(gx) or 1e-6)
-    else:
-        ax = math.atan2(gx, abs(gz) or 1e-6)
-        ay = math.atan2(gy, abs(gz) or 1e-6)
+    ax, ay = tilt_angles(accel, sideways)
     return max(-1.0, min(1.0, ax / lim)), max(-1.0, min(1.0, ay / lim))
 
 
@@ -217,6 +212,7 @@ class Mapper:
             "core": core,
             "nunchuk": state.nunchuk.buttons if state.nunchuk else 0,
             "classic": state.classic.buttons if state.classic else 0,
+            "motion": state.motion,
         }
         kbm = self._map_kbm(state, profile, groups, key_binds, mouse_curve, core, sideways)
         if not profile.xinput_enabled:

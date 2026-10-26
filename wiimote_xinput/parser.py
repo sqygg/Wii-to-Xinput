@@ -404,6 +404,7 @@ class WiimoteState:
     classic: ClassicState | None = None
     ir_dots: tuple[IrDot, ...] = ()
     pointer: Vec2 | None = None
+    motion: int = 0  # MOT_* gesture bits from motion.MotionDetector
 
 
 EMPTY_STATE = WiimoteState()

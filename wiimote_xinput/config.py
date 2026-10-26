@@ -130,6 +130,26 @@ class MouseConfig:
 
 
 @dataclass
+class MotionConfig:
+    """Thresholds for the bindable motion gestures (motion.* sources)."""
+
+    enabled: bool = True
+    shake_threshold_g: float = 1.0  # deviation from 1 g that counts as a shake
+    shake_hold_s: float = 0.2  # keep "shake" pressed this long after the last spike
+    tilt_angle_deg: float = 30.0  # angle that presses a tilt direction
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any] | None, default: "MotionConfig") -> "MotionConfig":
+        d = d or {}
+        return cls(
+            enabled=_bool(d.get("enabled"), default.enabled),
+            shake_threshold_g=_clampf(d.get("shake_threshold_g"), 0.3, 2.5, default.shake_threshold_g),
+            shake_hold_s=_clampf(d.get("shake_hold_s"), 0.05, 1.0, default.shake_hold_s),
+            tilt_angle_deg=_clampf(d.get("tilt_angle_deg"), 10.0, 80.0, default.tilt_angle_deg),
+        )
+
+
+@dataclass
 class KeyStickConfig:
     """Turn an analog source into four direction keys (WASD / arrows)."""
 
@@ -204,6 +224,7 @@ class Profile:
     keys: dict[str, str] = field(default_factory=dict)  # button source -> KBM_TARGET_LABELS key
     mouse: MouseConfig = field(default_factory=MouseConfig)
     key_stick: KeyStickConfig = field(default_factory=KeyStickConfig)
+    motion: MotionConfig = field(default_factory=MotionConfig)
 
     def needs_ir(self) -> bool:
         return "ir.pointer" in (
@@ -257,6 +278,7 @@ class Profile:
             keys=keys,
             mouse=MouseConfig.from_dict(d.get("mouse"), base.mouse),
             key_stick=KeyStickConfig.from_dict(d.get("key_stick"), base.key_stick),
+            motion=MotionConfig.from_dict(d.get("motion"), base.motion),
         )
 
     def copy(self, name: str | None = None) -> "Profile":
